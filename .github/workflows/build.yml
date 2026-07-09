@@ -1,0 +1,146 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Распаковать архив проекта в корень
+        run: |
+          set -e
+          # В корне репозитория лежит только этот workflow + 4PDApps-main.zip.
+          if [ ! -f 4PDApps-main.zip ]; then
+            echo "ОШИБКА: нет 4PDApps-main.zip в корне репозитория."; exit 1
+          fi
+          unzip -o -q 4PDApps-main.zip -d _extracted
+          if [ -d _extracted/4PDApps-main ]; then SRC=_extracted/4PDApps-main; else SRC=_extracted; fi
+          shopt -s dotglob
+          for item in "$SRC"/*; do
+            name=$(basename "$item")
+            [ "$name" = ".github" ] && continue
+            rm -rf "./$name"
+            cp -r "$item" "./$name"
+          done
+          shopt -u dotglob
+          rm -rf _extracted
+          rm -f 4PDApps-main.zip
+          echo "=== корень после распаковки ===" && ls -la
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Кэш Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web
+        run: npm run build
+
+      - name: Add Android platform
+        run: |
+          rm -rf android            # снести старую платформу — иначе cap add пропустит свежую сборку
+          rm -f capacitor.config.ts # в архиве только JSON-конфиг
+          npx cap add android
+          npx cap copy android      # принудительно скопировать свежий web-бандл (dist) в ассеты
+          {
+            echo "org.gradle.caching=true"
+            echo "org.gradle.parallel=true"
+            echo "org.gradle.configureondemand=true"
+            echo "org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8"
+          } >> android/gradle.properties
+
+      - name: Generate app icons
+        run: |
+          # Рендерим icon.svg в icon.png через sharp, затем генерим наборы иконок
+          if [ -f resources/icon.svg ]; then
+            npm i -g sharp-cli >/dev/null 2>&1 || npm i sharp >/dev/null 2>&1 || true
+            node -e "const s=require('sharp');s('resources/icon.svg',{density:300}).resize(1024,1024).png().toFile('resources/icon.png').then(()=>console.log('svg->png ok')).catch(e=>{console.log('render skip:',e.message)})" || echo "sharp render skipped"
+          fi
+          npx @capacitor/assets generate --android --assetPath resources
+
+      - name: Add Android permissions
+        run: |
+          MAN=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "QUERY_ALL_PACKAGES" "$MAN"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application#' "$MAN"
+          fi
+          # старый back-callback, чтобы кнопка/жест «Назад» доходили до приложения
+          sed -i 's#<application #<application android:enableOnBackInvokedCallback="false" #' "$MAN"
+          echo "----- manifest -----"
+          grep -E "uses-permission|enableOnBackInvokedCallback" "$MAN" || true
+
+      - name: Install native Apps plugin
+        run: |
+          PKG=android/app/src/main/java/leshugan/a4pda
+          mkdir -p "$PKG"
+          cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
+          cp native/MainActivity.java "$PKG/MainActivity.java"
+          echo "native files:" && ls -la "$PKG"
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build signed release APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --build-cache \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/uc.jks" \
+            -Pandroid.injected.signing.store.password="updatechecker" \
+            -Pandroid.injected.signing.key.alias="uc" \
+            -Pandroid.injected.signing.key.password="updatechecker"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Compiled_4PDApps
+          path: android/app/build/outputs/apk/release/*.apk
+
+  cleanup:
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete old runs and APKs (keep last 10 successful)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          WF=build.yml
+          echo "Оставляем 10 последних успешных запусков:"
+          KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
+          echo "$KEEP"
+          echo "Удаляем остальные запуски и их APK:"
+          gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
+            fi
+          done
