@@ -91,8 +91,12 @@ jobs:
           fi
           # старый back-callback, чтобы кнопка/жест «Назад» доходили до приложения
           sed -i 's#<application #<application android:enableOnBackInvokedCallback="false" #' "$MAN"
+          # экран 4pda внутри приложения (WebView)
+          if ! grep -q "leshugan.a4pda.WebViewActivity" "$MAN"; then
+            sed -i 's#</application>#    <activity android:name="leshugan.a4pda.WebViewActivity" android:configChanges="keyboardHidden|orientation|screenSize" android:exported="false" />\n    </application>#' "$MAN"
+          fi
           echo "----- manifest -----"
-          grep -E "uses-permission|enableOnBackInvokedCallback" "$MAN" || true
+          grep -E "uses-permission|enableOnBackInvokedCallback|WebViewActivity" "$MAN" || true
 
       - name: Install native Apps plugin
         run: |
@@ -100,6 +104,7 @@ jobs:
           mkdir -p "$PKG"
           cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
           cp native/MainActivity.java "$PKG/MainActivity.java"
+          cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
           echo "native files:" && ls -la "$PKG"
 
       - name: Sync Capacitor
