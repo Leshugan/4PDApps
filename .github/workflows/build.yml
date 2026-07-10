@@ -115,7 +115,7 @@ jobs:
           cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
           cp native/MainActivity.java "$PKG/MainActivity.java"
           cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
-          cp native/*.kt "$PKG/"
+          cp native/*.kt "$PKG/" 2>/dev/null || echo "WARN: no .kt files in native/ (нужен свежий 4PDApps-main.zip)"
           # пути FileProvider (для установки apk из «Загрузок») — весь внешний storage
           printf '%s\n' '<paths>' '  <external-path name="ext" path="." />' '  <external-files-path name="extfiles" path="." />' '  <cache-path name="cache" path="." />' '  <files-path name="files" path="." />' '</paths>' > android/app/src/main/res/xml/file_paths.xml
           echo "native files:" && ls -la "$PKG"
