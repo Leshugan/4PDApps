@@ -22,12 +22,12 @@ jobs:
       - name: Распаковать архив проекта в корень
         run: |
           set -e
-          # В корне репозитория лежит только этот workflow + 4PDApps-main.zip.
-          if [ ! -f 4PDApps-main.zip ]; then
-            echo "ОШИБКА: нет 4PDApps-main.zip в корне репозитория."; exit 1
+          # В корне репозитория лежит только этот workflow + Project_4PDApps.zip.
+          if [ ! -f Project_4PDApps.zip ]; then
+            echo "ОШИБКА: нет Project_4PDApps.zip в корне репозитория."; exit 1
           fi
-          unzip -o -q 4PDApps-main.zip -d _extracted
-          if [ -d _extracted/4PDApps-main ]; then SRC=_extracted/4PDApps-main; else SRC=_extracted; fi
+          unzip -o -q Project_4PDApps.zip -d _extracted
+          if [ -d _extracted/Project_4PDApps ]; then SRC=_extracted/Project_4PDApps; else SRC=_extracted; fi
           shopt -s dotglob
           for item in "$SRC"/*; do
             name=$(basename "$item")
@@ -37,7 +37,7 @@ jobs:
           done
           shopt -u dotglob
           rm -rf _extracted
-          rm -f 4PDApps-main.zip
+          rm -f Project_4PDApps.zip
           echo "=== корень после распаковки ===" && ls -la
 
       - uses: actions/setup-node@v4
@@ -115,7 +115,7 @@ jobs:
           cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
           cp native/MainActivity.java "$PKG/MainActivity.java"
           cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
-          cp native/*.kt "$PKG/" 2>/dev/null || echo "WARN: no .kt files in native/ (нужен свежий 4PDApps-main.zip)"
+          cp native/*.kt "$PKG/" 2>/dev/null || echo "WARN: no .kt files in native/ (нужен свежий Project_4PDApps.zip)"
           # пути FileProvider (для установки apk из «Загрузок») — весь внешний storage
           printf '%s\n' '<paths>' '  <external-path name="ext" path="." />' '  <external-files-path name="extfiles" path="." />' '  <cache-path name="cache" path="." />' '  <files-path name="files" path="." />' '</paths>' > android/app/src/main/res/xml/file_paths.xml
           echo "native files:" && ls -la "$PKG"
@@ -136,7 +136,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Compiled_4PDApps
+          name: 4PDApps_APK
           path: android/app/build/outputs/apk/release/*.apk
 
   cleanup:
