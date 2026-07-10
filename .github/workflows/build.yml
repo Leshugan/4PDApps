@@ -73,11 +73,14 @@ jobs:
             echo "org.gradle.configureondemand=true"
             echo "org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8"
           } >> android/gradle.properties
-          # JitPack репозиторий (для gplayapi)
-          sed -i 's#mavenCentral()#mavenCentral()\n        maven { url "https://jitpack.io" }#g' android/build.gradle
-          # gplayapi + gson — версии Google Play без входа в аккаунт
-          sed -i 's#dependencies {#dependencies {\n    implementation "com.gitlab.AuroraOSS:gplayapi:0e224071f3"\n    implementation "com.google.code.gson:gson:2.10.1"#' android/app/build.gradle
-          echo "----- app deps -----" && grep -E "gplayapi|gson|jitpack" android/build.gradle android/app/build.gradle || true
+          # Kotlin plugin (код Google Play API из gplayapi — на Kotlin)
+          sed -i "s#classpath 'com.android.tools.build:gradle.*#&\n        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.21'#" android/build.gradle
+          sed -i "s#apply plugin: 'com.android.application'#apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'#" android/app/build.gradle
+          # зависимости: gplayapi (Maven Central) + gson + okhttp + coroutines
+          sed -i 's#dependencies {#dependencies {\n    implementation "com.auroraoss:gplayapi:3.5.8"\n    implementation "com.google.code.gson:gson:2.10.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"#' android/app/build.gradle
+          # JVM target Kotlin = 17 (как у Java в Capacitor)
+          printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
+          echo "----- deps -----" && grep -E "gplayapi|okhttp|coroutines|kotlin-gradle|kotlin-android" android/build.gradle android/app/build.gradle || true
 
       - name: Generate app icons
         run: |
@@ -112,6 +115,7 @@ jobs:
           cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
           cp native/MainActivity.java "$PKG/MainActivity.java"
           cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
+          cp native/*.kt "$PKG/"
           # пути FileProvider (для установки apk из «Загрузок») — весь внешний storage
           printf '%s\n' '<paths>' '  <external-path name="ext" path="." />' '  <external-files-path name="extfiles" path="." />' '  <cache-path name="cache" path="." />' '  <files-path name="files" path="." />' '</paths>' > android/app/src/main/res/xml/file_paths.xml
           echo "native files:" && ls -la "$PKG"
