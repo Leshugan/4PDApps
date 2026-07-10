@@ -73,6 +73,11 @@ jobs:
             echo "org.gradle.configureondemand=true"
             echo "org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8"
           } >> android/gradle.properties
+          # JitPack репозиторий (для gplayapi)
+          sed -i 's#mavenCentral()#mavenCentral()\n        maven { url "https://jitpack.io" }#g' android/build.gradle
+          # gplayapi + gson — версии Google Play без входа в аккаунт
+          sed -i 's#dependencies {#dependencies {\n    implementation "com.gitlab.AuroraOSS:gplayapi:0e224071f3"\n    implementation "com.google.code.gson:gson:2.10.1"#' android/app/build.gradle
+          echo "----- app deps -----" && grep -E "gplayapi|gson|jitpack" android/build.gradle android/app/build.gradle || true
 
       - name: Generate app icons
         run: |
