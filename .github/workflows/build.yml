@@ -99,7 +99,7 @@ jobs:
           fi
           # запись в общее хранилище (стар. Android) + доступ ко всем файлам (Android 11+) + фоновая служба загрузок
           if ! grep -q "WRITE_EXTERNAL_STORAGE" "$MAN"; then
-            sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n\n    <application#' "$MAN"
+            sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />\n\n    <application#' "$MAN"
           fi
           # legacy-доступ к файлам (для списка «Загрузок» на Android 10)
           sed -i 's#<application #<application android:requestLegacyExternalStorage="true" #' "$MAN"
