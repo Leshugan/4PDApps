@@ -3,13 +3,6 @@ run-name: >-
   📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 3 * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
 
 on:
-  push:
-    branches: [main]          # любой твой коммит запускает сбор каталога сразу
-    paths-ignore:             # но НЕ коммиты самого бота (эти файлы он и пишет) — иначе бесконечный цикл
-      - 'catalog.json'
-      - 'version.json'
-      - 'versions.json'
-      - 'changes.json'
   schedule:
     - cron: '0 3 * * *'      # ежедневно 06:00 МСК — быстрый режим (свежие страницы)
     - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход
@@ -140,8 +133,9 @@ jobs:
                  || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
             if (m) pkg = m[1];
-            if (!pkg) { m = html.match(/play\.google\.com\/store\/apps\/details\?[^"'<>\s]*id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
-            if (!pkg) { m = html.match(/market:\/\/details\?[^"'<>\s]*id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             // версия/описание/иконка — из первого поста
             let v = '', d = '', ic = '';
             try {
@@ -211,7 +205,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 2; // версия парсера обогащения (подняли — старые темы переобработаются новым парсером)
+            const EV = 3; // версия парсера обогащения (подняли — старые темы переобработаются новым парсером)
             const CAP = MODE === 'fast' ? 600 : 2500;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
