@@ -2,8 +2,12 @@ name: Build 4pda catalog
 
 on:
   push:
-    paths:
-      - '.github/workflows/catalog.yml'   # залил workflow — прогон стартует сам
+    branches: [main]          # любой твой коммит запускает сбор каталога сразу
+    paths-ignore:             # но НЕ коммиты самого бота (эти файлы он и пишет) — иначе бесконечный цикл
+      - 'catalog.json'
+      - 'version.json'
+      - 'versions.json'
+      - 'changes.json'
   schedule:
     - cron: '0 3 * * *'      # ежедневно 06:00 МСК — быстрый режим (свежие страницы)
     - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход
