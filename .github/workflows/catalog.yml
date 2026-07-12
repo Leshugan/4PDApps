@@ -1,6 +1,9 @@
 name: Build 4pda catalog
 
 on:
+  push:
+    paths:
+      - '.github/workflows/catalog.yml'   # залил workflow — прогон стартует сам
   schedule:
     - cron: '0 3 * * *'      # ежедневно 06:00 МСК — быстрый режим (свежие страницы)
     - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход
@@ -119,6 +122,30 @@ jobs:
             return '';
           }
 
+          // извлечь из шапки темы: пакет, версию, краткое описание, иконку
+          async function extractHat(topicId) {
+            const html = await open('https://4pda.to/forum/index.php?showtopic=' + topicId);
+            if (!html || !/post_body|postcolor/.test(html)) return null;
+            let data = { pkg: '', v: '', d: '', ic: '' };
+            try {
+              data = await page.evaluate(() => {
+                const post = document.querySelector('.post_body, .postcolor') || document.body;
+                const H = post.innerHTML || ''; const T = post.innerText || '';
+                let pkg = '';
+                let m = H.match(/play\.google\.com\/store\/apps\/details\?[^"'<> ]*id=([\w.]+)/);
+                if (m) pkg = m[1];
+                if (!pkg) { m = T.match(/(?:Имя пакета|Package)\s*:?\s*([a-zA-Z][\w.]+\.[\w.]+)/); if (m) pkg = m[1]; }
+                let v = ''; m = T.match(/(?:Версия|Version)\s*:?\s*([^\n\r|]{1,40})/i); if (m) v = m[1].trim();
+                let d = ''; m = T.match(/(?:Краткое описание)\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное описание|Системные требовани|Что нового|$)/i); if (m) d = m[1];
+                if (!d) { m = T.match(/(?:Описание)\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные требовани|Что нового|$)/i); if (m) d = m[1]; }
+                let ic = ''; const og = document.querySelector('meta[property="og:image"]'); if (og) ic = og.content;
+                if (!ic) { const im = post.querySelector('img'); if (im && im.src) ic = im.src; }
+                return { pkg, v, d: (d || '').replace(/\s+/g, ' ').trim().slice(0, 160), ic };
+              });
+            } catch {}
+            return data;
+          }
+
           let total = 0;
           const doneForums = new Set();
           const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0 }));
@@ -168,6 +195,26 @@ jobs:
             saveAndCommit(`после раздела ${fid}`, map); // сохраняем после каждого раздела
           }
 
+          // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
+          {
+            const CAP = MODE === 'fast' ? 600 : 2500;
+            const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
+            const t0 = Date.now();
+            let cand = Object.values(map).filter(a => !a.e);   // ещё не обогащённые
+            cand.sort((a, b) => (+b.t) - (+a.t));               // новые (больший id) — первыми
+            cand = cand.slice(0, CAP);
+            let en = 0;
+            for (const a of cand) {
+              if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
+              const h = await extractHat(a.t);
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = 1; }
+              en++;
+              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
+              await page.waitForTimeout(120);
+            }
+            console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
+          }
+
           await browser.close();
 
           // считаем разницу со старым состоянием → дельта для приложения
@@ -176,13 +223,17 @@ jobs:
           if (MODE === 'full') { for (const t in oldMap) if (!map[t]) del.push(t); } // удаления видит только полный обход
           const newVersion = Date.now();
           const apps = Object.values(map);
+          // versions.json — компактная карта пакет→[тема, версия] для проверки обновлений (как уроборос)
+          const vmap = {};
+          for (const a of apps) if (a.pkg && a.v) vmap[a.pkg] = [a.t, a.v];
           fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, apps }));
-          fs.writeFileSync('version.json', JSON.stringify({ version: newVersion, count: apps.length, updated: new Date().toISOString(), mode: MODE }));
+          fs.writeFileSync('version.json', JSON.stringify({ version: newVersion, count: apps.length, enriched: apps.filter(a => a.e).length, withPkg: Object.keys(vmap).length, updated: new Date().toISOString(), mode: MODE }));
+          fs.writeFileSync('versions.json', JSON.stringify({ version: newVersion, map: vmap }));
           fs.writeFileSync('changes.json', JSON.stringify({ from_version: oldVersion, to_version: newVersion, mode: MODE, add, upd, del }));
-          console.log(`ГОТОВО [${MODE}]: всего ${apps.length}, добавлено ${add.length}, изменено ${upd.length}, удалено ${del.length}`);
-          // финальный коммит всех трёх файлов
+          console.log(`ГОТОВО [${MODE}]: всего ${apps.length}, +${add.length}/~${upd.length}/-${del.length}, с пакетом ${Object.keys(vmap).length}`);
+          // финальный коммит
           try {
-            execSync('git add catalog.json version.json changes.json', { stdio: 'ignore' });
+            execSync('git add catalog.json version.json versions.json changes.json', { stdio: 'ignore' });
             execSync('git diff --cached --quiet || git commit -m "catalog ' + MODE + ': ' + apps.length + ' (+' + add.length + '/~' + upd.length + '/-' + del.length + ')"', { stdio: 'ignore', shell: '/bin/bash' });
             try { execSync('git push', { stdio: 'ignore' }); } catch { execSync('git pull --rebase -X ours && git push', { stdio: 'ignore', shell: '/bin/bash' }); }
             console.log('запушено');
@@ -191,7 +242,7 @@ jobs:
 
       - name: Run crawler
         env:
-          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 1 * * 0' && 'full' || 'fast') }}
+          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 3 * * *' && 'fast' || 'full') }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -205,7 +256,7 @@ jobs:
           rm -rf node_modules
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add catalog.json version.json changes.json 2>/dev/null || true
+          git add catalog.json version.json versions.json changes.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "нет изменений для коммита"
           else
