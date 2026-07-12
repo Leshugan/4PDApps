@@ -1,0 +1,183 @@
+name: Build 4pda catalog
+
+on:
+  schedule:
+    - cron: '0 3 * * *'      # каждый день в 03:00 UTC (06:00 МСК)
+  workflow_dispatch:          # + ручной запуск кнопкой в Actions
+
+permissions:
+  contents: write             # разрешаем коммитить catalog.json
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+jobs:
+  build-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm i playwright@1.47.2 >/dev/null 2>&1
+          npx playwright install --with-deps chromium
+
+      - name: Write crawler
+        run: |
+          cat > crawl.mjs << 'CRAWLER'
+          import { chromium } from 'playwright';
+          import fs from 'fs';
+          import { execSync } from 'child_process';
+
+          // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
+          let committing = false;
+          function saveAndCommit(label, mapRef) {
+            const apps = Object.values(mapRef);
+            const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
+            try { fs.writeFileSync('catalog.json', JSON.stringify(out)); } catch (e) { return; }
+            if (committing) return; committing = true;
+            try {
+              execSync('git add catalog.json', { stdio: 'ignore' });
+              execSync('git diff --cached --quiet || git commit -m "catalog: ' + apps.length + ' apps (' + label + ')"', { stdio: 'ignore', shell: '/bin/bash' });
+              try { execSync('git push', { stdio: 'ignore' }); } catch { execSync('git pull --rebase -X ours && git push', { stdio: 'ignore', shell: '/bin/bash' }); }
+              console.log('  >> сохранено в репо: ' + apps.length + ' тем (' + label + ')');
+            } catch (e) { console.log('  >> коммит не прошёл: ' + e.message); }
+            committing = false;
+          }
+
+          // Каталоги 4pda в том порядке, как на сайте (forumId: подпись)
+          const FORUMS = [
+            [212,  'Android - Программы'],
+            [1109, 'Архив программ'],
+            [213,  'Android - игры'],
+            [550,  'Создание программ и игр под Android'],
+            [284,  'Архив раздела (разработка)'],
+            [1198, 'Для мобильных устройств'],
+            [94,   'Навигация - Программы'],
+            [529,  'Эмуляторы для Android'],
+          ];
+          const JUNK = /^(тема|последн|ответ|цитата|показать|скрыт|прикреплено|важно|опрос|правила|каталог|дайджест|поиск|набор|подписаться|новости из мира|обсуждение новост|стр\.?|FAQ|обзоры|вопросы и предложения|важные объявления|помощь в поиске|установка игр|игровые социальные|новости игр|новости раздела|заявки на|обсуждение анонсов|10 заповедей|программы$|как правильно|карма|скачивание с сайта|редактирование|не загружается|общие вопросы|общий faq|часто задаваем|разработчики и google|скрипты на shell|общие принципы|мои программы|обзоры игр|глоссар|droidfish|android - глоссарий|»)/i;
+          // разделы-мусор (НЕ из каталогов пользователя): iOS, форумная мета, железо телефонов/консолей, порт на др.ОС, dev-обсуждения
+          const DROP_F = new Set(['373','813','141','142','4','283','140','635','139','645','887','279','93','763','442','144','203','103','48','295','281','1192','214','910','380','551','1143','1158']);
+
+          // грузим прошлый catalog.json (инкрементально дополняем) и СРАЗУ чистим его от мусора
+          let prev = { apps: [] };
+          try { prev = JSON.parse(fs.readFileSync('catalog.json', 'utf8')); } catch {}
+          const map = {};
+          for (const a of (prev.apps || [])) {
+            if (!a || !a.t) continue;
+            if (DROP_F.has(String(a.f))) continue;
+            const nm = (a.n || '').trim();
+            if (nm.length < 2 || /^[\d#]+$/.test(nm) || JUNK.test(nm)) continue;
+            map[a.t] = a;
+          }
+          console.log('загружено из старого catalog.json после чистки:', Object.keys(map).length);
+
+          const browser = await chromium.launch({ headless: true });
+          const ctx = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            locale: 'ru-RU',
+            viewport: { width: 1366, height: 900 },
+          });
+          const page = await ctx.newPage();
+
+          async function open(url) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                // ждём, пока Cloudflare-заставка сама пройдёт (реальный движок её решает)
+                for (let i = 0; i < 20; i++) {
+                  const t = await page.title().catch(() => '');
+                  const html = await page.content().catch(() => '');
+                  if (!/Just a moment|Attention Required|Проверка браузера/i.test(t + html)) return html;
+                  await page.waitForTimeout(1500);
+                }
+                return await page.content();
+              } catch { await page.waitForTimeout(2000); }
+            }
+            return '';
+          }
+
+          let total = 0;
+          const doneForums = new Set();
+          const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0 }));
+          let processed = 0;
+          while (queue.length && processed < 120) {
+            const { id: fid, name: fname, depth } = queue.shift();
+            if (doneForums.has(fid)) continue;
+            doneForums.add(fid);
+            if (DROP_F.has(fid)) { console.log(`forum ${fid} пропущен (не из каталогов)`); continue; }
+            processed++;
+            let emptyStreak = 0, noNew = 0, lastSig = '';
+            for (let st = 0; st <= 40000; st += 30) {
+              const url = `https://4pda.to/forum/index.php?showforum=${fid}&st=${st}`;
+              const html = await open(url);
+              if (!html) { if (++emptyStreak >= 3) break; else continue; }
+              emptyStreak = 0;
+              // подразделы этой категории — берём только на первой странице и только у seed-разделов (depth 0)
+              if (st === 0 && depth === 0) {
+                const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
+                let added = 0;
+                for (const s of subs) { if (added >= 25) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: 1 }); added++; } }
+              }
+              const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
+              // если страница повторяет предыдущую — пагинация зависла, выходим из раздела
+              const ids = links.map(l => (l.href.match(/showtopic=(\d+)/) || [])[1]).filter(Boolean);
+              const sig = ids.length + ':' + ids.slice(0, 6).join(',');
+              if (st > 0 && sig === lastSig) { console.log(`  forum ${fid}: пагинация зависла на стр. ${st / 30}, стоп`); break; }
+              lastSig = sig;
+              let found = 0, any = 0;
+              for (const l of links) {
+                const m = l.href.match(/showtopic=(\d+)/); if (!m) continue;
+                any++;
+                const tid = m[1];
+                let name = (l.text || '').replace(/\s+/g, ' ').trim();
+                if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
+                if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
+              }
+              if (any === 0) { if (++emptyStreak >= 2) break; }
+              else if (found === 0) { if (++noNew >= 5) break; } else noNew = 0;
+              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, total ${Object.keys(map).length}`);
+              if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
+              await page.waitForTimeout(200);
+            }
+            total = Object.keys(map).length;
+            console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
+            saveAndCommit(`после раздела ${fid}`, map); // сохраняем после каждого раздела
+          }
+
+          await browser.close();
+          const apps = Object.values(map);
+          const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
+          fs.writeFileSync('catalog.json', JSON.stringify(out));
+          console.log('WROTE catalog.json, apps =', apps.length);
+          CRAWLER
+
+      - name: Run crawler
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          node crawl.mjs
+
+      - name: Commit catalog.json
+        run: |
+          rm -f crawl.mjs package.json package-lock.json
+          rm -rf node_modules
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          if git diff --cached --quiet; then
+            echo "catalog.json не изменился — коммит не нужен"
+          else
+            git commit -m "Update catalog.json ($(date -u +%Y-%m-%d))"
+            git push
+          fi
