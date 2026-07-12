@@ -1,8 +1,12 @@
 name: Build APK
+run-name: "🔨 Сборка APK 4PDApps"
 
 on:
   push:
     branches: [main]
+    paths:                          # собирать APK только когда меняется сам проект,
+      - 'Project_4PDApps.zip'       # а не catalog.json/versions.json/catalog.yml
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 concurrency:

@@ -1,4 +1,6 @@
 name: Build 4pda catalog
+run-name: >-
+  📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 3 * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
 
 on:
   push:
@@ -129,25 +131,33 @@ jobs:
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           async function extractHat(topicId) {
             const html = await open('https://4pda.to/forum/index.php?showtopic=' + topicId);
-            if (!html || !/post_body|postcolor/.test(html)) return null;
-            let data = { pkg: '', v: '', d: '', ic: '' };
+            if (!html || html.length < 400) return null;
+            // ПАКЕТ — по всему HTML (как в приложении): текст «Имя пакета», ссылка Google Play, market
+            let pkg = '';
+            const PKG = "([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+){1,})";
+            let m = html.match(new RegExp("Имя\\s*пакета[\\s\\S]{0,40}?" + PKG, "i"))
+                 || html.match(new RegExp("Название\\s*пакета[\\s\\S]{0,40}?" + PKG, "i"))
+                 || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
+                 || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
+            if (m) pkg = m[1];
+            if (!pkg) { m = html.match(/play\.google\.com\/store\/apps\/details\?[^"'<>\s]*id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/market:\/\/details\?[^"'<>\s]*id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            // версия/описание/иконка — из первого поста
+            let v = '', d = '', ic = '';
             try {
-              data = await page.evaluate(() => {
+              const r = await page.evaluate(() => {
                 const post = document.querySelector('.post_body, .postcolor') || document.body;
-                const H = post.innerHTML || ''; const T = post.innerText || '';
-                let pkg = '';
-                let m = H.match(/play\.google\.com\/store\/apps\/details\?[^"'<> ]*id=([\w.]+)/);
-                if (m) pkg = m[1];
-                if (!pkg) { m = T.match(/(?:Имя пакета|Package)\s*:?\s*([a-zA-Z][\w.]+\.[\w.]+)/); if (m) pkg = m[1]; }
-                let v = ''; m = T.match(/(?:Версия|Version)\s*:?\s*([^\n\r|]{1,40})/i); if (m) v = m[1].trim();
-                let d = ''; m = T.match(/(?:Краткое описание)\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное описание|Системные требовани|Что нового|$)/i); if (m) d = m[1];
-                if (!d) { m = T.match(/(?:Описание)\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные требовани|Что нового|$)/i); if (m) d = m[1]; }
+                const T = post.innerText || '';
+                let v = ''; let mm = T.match(/(?:Версия|Текущая версия|Version)\s*:?\s*([^\n\r|]{1,40})/i); if (mm) v = mm[1].trim();
+                let d = ''; mm = T.match(/Краткое описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное|Системные|Что нового|$)/i); if (mm) d = mm[1];
+                if (!d) { mm = T.match(/Описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные|Что нового|$)/i); if (mm) d = mm[1]; }
                 let ic = ''; const og = document.querySelector('meta[property="og:image"]'); if (og) ic = og.content;
                 if (!ic) { const im = post.querySelector('img'); if (im && im.src) ic = im.src; }
-                return { pkg, v, d: (d || '').replace(/\s+/g, ' ').trim().slice(0, 160), ic };
+                return { v, d: (d || '').replace(/\s+/g, ' ').trim().slice(0, 160), ic };
               });
+              v = r.v; d = r.d; ic = r.ic;
             } catch {}
-            return data;
+            return { pkg, v, d, ic };
           }
 
           let total = 0;
@@ -201,17 +211,18 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
+            const EV = 2; // версия парсера обогащения (подняли — старые темы переобработаются новым парсером)
             const CAP = MODE === 'fast' ? 600 : 2500;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
-            let cand = Object.values(map).filter(a => !a.e);   // ещё не обогащённые
-            cand.sort((a, b) => (+b.t) - (+a.t));               // новые (больший id) — первыми
+            let cand = Object.values(map).filter(a => a.e !== EV);   // ещё не обогащённые текущим парсером
+            cand.sort((a, b) => (+b.t) - (+a.t));                    // новые (больший id) — первыми
             cand = cand.slice(0, CAP);
             let en = 0;
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = 1; }
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; }
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
               await page.waitForTimeout(120);
@@ -221,24 +232,18 @@ jobs:
 
           await browser.close();
 
-          // считаем разницу со старым состоянием → дельта для приложения
-          const add = [], upd = [], del = [];
-          for (const t in map) { if (!oldMap[t]) add.push(map[t]); else if (oldMap[t].n !== map[t].n) upd.push(map[t]); }
-          if (MODE === 'full') { for (const t in oldMap) if (!map[t]) del.push(t); } // удаления видит только полный обход
           const newVersion = Date.now();
           const apps = Object.values(map);
-          // versions.json — компактная карта пакет→[тема, версия] для проверки обновлений (как уроборос)
-          const vmap = {};
-          for (const a of apps) if (a.pkg && a.v) vmap[a.pkg] = [a.t, a.v];
-          fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, apps }));
-          fs.writeFileSync('version.json', JSON.stringify({ version: newVersion, count: apps.length, enriched: apps.filter(a => a.e).length, withPkg: Object.keys(vmap).length, updated: new Date().toISOString(), mode: MODE }));
-          fs.writeFileSync('versions.json', JSON.stringify({ version: newVersion, map: vmap }));
-          fs.writeFileSync('changes.json', JSON.stringify({ from_version: oldVersion, to_version: newVersion, mode: MODE, add, upd, del }));
-          console.log(`ГОТОВО [${MODE}]: всего ${apps.length}, +${add.length}/~${upd.length}/-${del.length}, с пакетом ${Object.keys(vmap).length}`);
+          // ВСЁ в одном файле: версия + приложения (пакет/версия/описание/иконка внутри записей)
+          fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, withPkg: apps.filter(a => a.pkg).length, apps }));
+          // лишние файлы больше не нужны — удаляем из репозитория
+          for (const f of ['version.json', 'versions.json', 'changes.json']) { try { fs.unlinkSync(f); } catch {} }
+          try { execSync('git rm -f --ignore-unmatch version.json versions.json changes.json', { stdio: 'ignore' }); } catch {}
+          console.log(`ГОТОВО [${MODE}]: всего ${apps.length}, с пакетом ${apps.filter(a => a.pkg).length}`);
           // финальный коммит
           try {
-            execSync('git add catalog.json version.json versions.json changes.json', { stdio: 'ignore' });
-            execSync('git diff --cached --quiet || git commit -m "catalog ' + MODE + ': ' + apps.length + ' (+' + add.length + '/~' + upd.length + '/-' + del.length + ')"', { stdio: 'ignore', shell: '/bin/bash' });
+            execSync('git add catalog.json', { stdio: 'ignore' });
+            execSync('git diff --cached --quiet || git commit -m "catalog ' + MODE + ': ' + apps.length + ' тем, ' + apps.filter(a => a.pkg).length + ' с пакетом"', { stdio: 'ignore', shell: '/bin/bash' });
             try { execSync('git push', { stdio: 'ignore' }); } catch { execSync('git pull --rebase -X ours && git push', { stdio: 'ignore', shell: '/bin/bash' }); }
             console.log('запушено');
           } catch (e) { console.log('финальный коммит не прошёл:', e.message); }
