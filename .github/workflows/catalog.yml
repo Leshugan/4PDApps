@@ -1,0 +1,132 @@
+name: Build 4pda catalog
+
+on:
+  schedule:
+    - cron: '0 3 * * *'      # каждый день в 03:00 UTC (06:00 МСК)
+  workflow_dispatch:          # + ручной запуск кнопкой в Actions
+
+permissions:
+  contents: write             # разрешаем коммитить catalog.json
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+jobs:
+  build-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm i playwright@1.47.2 >/dev/null 2>&1
+          npx playwright install --with-deps chromium
+
+      - name: Write crawler
+        run: |
+          cat > crawl.mjs << 'CRAWLER'
+          import { chromium } from 'playwright';
+          import fs from 'fs';
+
+          // Каталоги 4pda в том порядке, как на сайте (forumId: подпись)
+          const FORUMS = [
+            [212,  'Android - Программы'],
+            [1109, 'Архив программ'],
+            [213,  'Android - игры'],
+            [550,  'Создание программ и игр под Android'],
+            [284,  'Архив раздела (разработка)'],
+            [1198, 'Для мобильных устройств'],
+            [94,   'Навигация - Программы'],
+            [529,  'Эмуляторы для Android'],
+          ];
+          const JUNK = /^(тема|последн|ответ|цитата|показать|скрыт|прикреплено|важно|опрос|правила|каталог|дайджест|поиск|набор|подписаться|новости из мира|обсуждение новост|стр\.?)/i;
+
+          // грузим прошлый catalog.json (инкрементально дополняем)
+          let prev = { apps: [] };
+          try { prev = JSON.parse(fs.readFileSync('catalog.json', 'utf8')); } catch {}
+          const map = {};
+          for (const a of (prev.apps || [])) if (a && a.t) map[a.t] = a;
+
+          const browser = await chromium.launch({ headless: true });
+          const ctx = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            locale: 'ru-RU',
+            viewport: { width: 1366, height: 900 },
+          });
+          const page = await ctx.newPage();
+
+          async function open(url) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                // ждём, пока Cloudflare-заставка сама пройдёт (реальный движок её решает)
+                for (let i = 0; i < 20; i++) {
+                  const t = await page.title().catch(() => '');
+                  const html = await page.content().catch(() => '');
+                  if (!/Just a moment|Attention Required|Проверка браузера/i.test(t + html)) return html;
+                  await page.waitForTimeout(1500);
+                }
+                return await page.content();
+              } catch { await page.waitForTimeout(2000); }
+            }
+            return '';
+          }
+
+          let total = 0;
+          for (const [fid, fname] of FORUMS) {
+            let emptyStreak = 0, noNew = 0;
+            for (let st = 0; st <= 200000; st += 30) {
+              const url = `https://4pda.to/forum/index.php?showforum=${fid}&prune_day=1000000&sort_by=last_post&sort_order=desc&st=${st}`;
+              const html = await open(url);
+              if (!html) { if (++emptyStreak >= 3) break; else continue; }
+              emptyStreak = 0;
+              const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
+              let found = 0, any = 0;
+              for (const l of links) {
+                const m = l.href.match(/showtopic=(\d+)/); if (!m) continue;
+                any++;
+                const tid = m[1];
+                let name = (l.text || '').replace(/\s+/g, ' ').trim();
+                if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
+                if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
+              }
+              if (any === 0) { if (++emptyStreak >= 2) break; }
+              else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
+              await page.waitForTimeout(250);
+            }
+            total = Object.keys(map).length;
+            console.log(`forum ${fid} (${fname}) done, total in catalog: ${total}`);
+          }
+
+          await browser.close();
+          const apps = Object.values(map);
+          const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
+          fs.writeFileSync('catalog.json', JSON.stringify(out));
+          console.log('WROTE catalog.json, apps =', apps.length);
+          CRAWLER
+
+      - name: Run crawler
+        run: node crawl.mjs
+
+      - name: Commit catalog.json
+        run: |
+          rm -f crawl.mjs package.json package-lock.json
+          rm -rf node_modules
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          if git diff --cached --quiet; then
+            echo "catalog.json не изменился — коммит не нужен"
+          else
+            git commit -m "Update catalog.json ($(date -u +%Y-%m-%d))"
+            git push
+          fi
