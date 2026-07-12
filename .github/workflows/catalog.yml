@@ -82,13 +82,26 @@ jobs:
           }
 
           let total = 0;
-          for (const [fid, fname] of FORUMS) {
+          const doneForums = new Set();
+          const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0 }));
+          let processed = 0;
+          while (queue.length && processed < 120) {
+            const { id: fid, name: fname, depth } = queue.shift();
+            if (doneForums.has(fid)) continue;
+            doneForums.add(fid);
+            processed++;
             let emptyStreak = 0, noNew = 0;
-            for (let st = 0; st <= 200000; st += 30) {
-              const url = `https://4pda.to/forum/index.php?showforum=${fid}&prune_day=1000000&sort_by=last_post&sort_order=desc&st=${st}`;
+            for (let st = 0; st <= 300000; st += 30) {
+              const url = `https://4pda.to/forum/index.php?showforum=${fid}&st=${st}`;
               const html = await open(url);
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
+              // подразделы этой категории — берём только на первой странице и только у seed-разделов (depth 0)
+              if (st === 0 && depth === 0) {
+                const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
+                let added = 0;
+                for (const s of subs) { if (added >= 25) break; if (s && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: 1 }); added++; } }
+              }
               const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
               let found = 0, any = 0;
               for (const l of links) {
@@ -101,10 +114,11 @@ jobs:
               }
               if (any === 0) { if (++emptyStreak >= 2) break; }
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
-              await page.waitForTimeout(250);
+              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, total ${Object.keys(map).length}`);
+              await page.waitForTimeout(200);
             }
             total = Object.keys(map).length;
-            console.log(`forum ${fid} (${fname}) done, total in catalog: ${total}`);
+            console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
           }
 
           await browser.close();
