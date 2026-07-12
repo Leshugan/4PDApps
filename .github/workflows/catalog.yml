@@ -65,13 +65,22 @@ jobs:
             [94,   'Навигация - Программы'],
             [529,  'Эмуляторы для Android'],
           ];
-          const JUNK = /^(тема|последн|ответ|цитата|показать|скрыт|прикреплено|важно|опрос|правила|каталог|дайджест|поиск|набор|подписаться|новости из мира|обсуждение новост|стр\.?)/i;
+          const JUNK = /^(тема|последн|ответ|цитата|показать|скрыт|прикреплено|важно|опрос|правила|каталог|дайджест|поиск|набор|подписаться|новости из мира|обсуждение новост|стр\.?|FAQ|обзоры|вопросы и предложения|важные объявления|помощь в поиске|установка игр|игровые социальные|новости игр|новости раздела|заявки на|обсуждение анонсов|10 заповедей|программы$|как правильно|карма|скачивание с сайта|редактирование|не загружается|общие вопросы|общий faq|часто задаваем|разработчики и google|скрипты на shell|общие принципы|мои программы|обзоры игр|глоссар|droidfish|android - глоссарий|»)/i;
+          // разделы-мусор (НЕ из каталогов пользователя): iOS, форумная мета, железо телефонов/консолей, порт на др.ОС, dev-обсуждения
+          const DROP_F = new Set(['373','813','141','142','4','283','140','635','139','645','887','279','93','763','442','144','203','103','48','295','281','1192','214','910','380','551','1143','1158']);
 
-          // грузим прошлый catalog.json (инкрементально дополняем)
+          // грузим прошлый catalog.json (инкрементально дополняем) и СРАЗУ чистим его от мусора
           let prev = { apps: [] };
           try { prev = JSON.parse(fs.readFileSync('catalog.json', 'utf8')); } catch {}
           const map = {};
-          for (const a of (prev.apps || [])) if (a && a.t) map[a.t] = a;
+          for (const a of (prev.apps || [])) {
+            if (!a || !a.t) continue;
+            if (DROP_F.has(String(a.f))) continue;
+            const nm = (a.n || '').trim();
+            if (nm.length < 2 || /^[\d#]+$/.test(nm) || JUNK.test(nm)) continue;
+            map[a.t] = a;
+          }
+          console.log('загружено из старого catalog.json после чистки:', Object.keys(map).length);
 
           const browser = await chromium.launch({ headless: true });
           const ctx = await browser.newContext({
@@ -106,6 +115,7 @@ jobs:
             const { id: fid, name: fname, depth } = queue.shift();
             if (doneForums.has(fid)) continue;
             doneForums.add(fid);
+            if (DROP_F.has(fid)) { console.log(`forum ${fid} пропущен (не из каталогов)`); continue; }
             processed++;
             let emptyStreak = 0, noNew = 0, lastSig = '';
             for (let st = 0; st <= 40000; st += 30) {
@@ -117,7 +127,7 @@ jobs:
               if (st === 0 && depth === 0) {
                 const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
                 let added = 0;
-                for (const s of subs) { if (added >= 25) break; if (s && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: 1 }); added++; } }
+                for (const s of subs) { if (added >= 25) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: 1 }); added++; } }
               }
               const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
               // если страница повторяет предыдущую — пагинация зависла, выходим из раздела
