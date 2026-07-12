@@ -2,8 +2,16 @@ name: Build 4pda catalog
 
 on:
   schedule:
-    - cron: '0 3 * * *'      # каждый день в 03:00 UTC (06:00 МСК)
-  workflow_dispatch:          # + ручной запуск кнопкой в Actions
+    - cron: '0 3 * * *'      # ежедневно 06:00 МСК — быстрый режим (свежие страницы)
+    - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Режим обхода'
+        required: false
+        default: 'full'
+        type: choice
+        options: [full, fast]
 
 permissions:
   contents: write             # разрешаем коммитить catalog.json
@@ -81,6 +89,10 @@ jobs:
             map[a.t] = a;
           }
           console.log('загружено из старого catalog.json после чистки:', Object.keys(map).length);
+          const MODE = process.env.MODE === 'fast' ? 'fast' : 'full';
+          const FAST_PAGES = 3; // быстрый режим: только первые страницы (свежее)
+          const oldVersion = prev.version || 0;
+          const oldMap = {}; for (const t in map) oldMap[t] = { n: map[t].n, f: map[t].f };
 
           const browser = await chromium.launch({ headless: true });
           const ctx = await browser.newContext({
@@ -119,6 +131,7 @@ jobs:
             processed++;
             let emptyStreak = 0, noNew = 0, lastSig = '';
             for (let st = 0; st <= 40000; st += 30) {
+              if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
               const url = `https://4pda.to/forum/index.php?showforum=${fid}&st=${st}`;
               const html = await open(url);
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
@@ -156,28 +169,46 @@ jobs:
           }
 
           await browser.close();
+
+          // считаем разницу со старым состоянием → дельта для приложения
+          const add = [], upd = [], del = [];
+          for (const t in map) { if (!oldMap[t]) add.push(map[t]); else if (oldMap[t].n !== map[t].n) upd.push(map[t]); }
+          if (MODE === 'full') { for (const t in oldMap) if (!map[t]) del.push(t); } // удаления видит только полный обход
+          const newVersion = Date.now();
           const apps = Object.values(map);
-          const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
-          fs.writeFileSync('catalog.json', JSON.stringify(out));
-          console.log('WROTE catalog.json, apps =', apps.length);
+          fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, apps }));
+          fs.writeFileSync('version.json', JSON.stringify({ version: newVersion, count: apps.length, updated: new Date().toISOString(), mode: MODE }));
+          fs.writeFileSync('changes.json', JSON.stringify({ from_version: oldVersion, to_version: newVersion, mode: MODE, add, upd, del }));
+          console.log(`ГОТОВО [${MODE}]: всего ${apps.length}, добавлено ${add.length}, изменено ${upd.length}, удалено ${del.length}`);
+          // финальный коммит всех трёх файлов
+          try {
+            execSync('git add catalog.json version.json changes.json', { stdio: 'ignore' });
+            execSync('git diff --cached --quiet || git commit -m "catalog ' + MODE + ': ' + apps.length + ' (+' + add.length + '/~' + upd.length + '/-' + del.length + ')"', { stdio: 'ignore', shell: '/bin/bash' });
+            try { execSync('git push', { stdio: 'ignore' }); } catch { execSync('git pull --rebase -X ours && git push', { stdio: 'ignore', shell: '/bin/bash' }); }
+            console.log('запушено');
+          } catch (e) { console.log('финальный коммит не прошёл:', e.message); }
           CRAWLER
 
       - name: Run crawler
+        env:
+          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 1 * * 0' && 'full' || 'fast') }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Режим: $MODE"
           node crawl.mjs
 
-      - name: Commit catalog.json
+      - name: Commit (safety net)
+        if: always()
         run: |
           rm -f crawl.mjs package.json package-lock.json
           rm -rf node_modules
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add catalog.json
+          git add catalog.json version.json changes.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "catalog.json не изменился — коммит не нужен"
+            echo "нет изменений для коммита"
           else
-            git commit -m "Update catalog.json ($(date -u +%Y-%m-%d))"
-            git push
+            git commit -m "catalog update ($(date -u +%Y-%m-%d))"
+            git push || (git pull --rebase -X ours && git push)
           fi
