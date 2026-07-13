@@ -217,7 +217,7 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; } // версию не храним — берётся живьём в приложении
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; } // версию не храним — грузится живьём при каждом запуске приложения
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
               await page.waitForTimeout(120);
