@@ -133,12 +133,16 @@ jobs:
             const PKG = "([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+){1,})";
             let m = html.match(new RegExp("Имя\\s*пакета[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("Название\\s*пакета[\\s\\S]{0,40}?" + PKG, "i"))
+                 || html.match(new RegExp("Пакет\\s*[:\uFF1A]\\s*" + PKG, "i"))
+                 || html.match(new RegExp("ID\\s*приложения[\\s\\S]{0,20}?" + PKG, "i"))
                  || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
             if (m) pkg = m[1];
             if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(new RegExp("(?:apkpure\\.com|apkcombo\\.com|apkmonk\\.com|apkmirror\\.com|apkfab\\.com)/[^\"'\\s<>]*?/" + PKG, "i")); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/([a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,})[-_ v]{0,3}[\d._]*\.apk/i); if (m && m[1].length >= 7 && m[1].split('.').length >= 3) pkg = m[1]; }  // пакет из имени APK-файла (напр. com.x.y-2.apk)
             // версия/описание/иконка — из первого поста
             let v = '', d = '', ic = '';
             try {
