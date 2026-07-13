@@ -145,8 +145,9 @@ jobs:
                 const post = document.querySelector('.post_body, .postcolor') || document.body;
                 const T = post.innerText || '';
                 let v = ''; let mm = T.match(/(?:Версия|Текущая версия|Version)\s*:?\s*([^\n\r|]{1,40})/i); if (mm) v = mm[1].trim();
-                let d = ''; mm = T.match(/Краткое описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное|Системные|Что нового|$)/i); if (mm) d = mm[1];
-                if (!d) { mm = T.match(/Описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные|Что нового|$)/i); if (mm) d = mm[1]; }
+                let d = ''; mm = T.match(/Краткое описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное|Системные|Что нового|Особенности|$)/i); if (mm) d = mm[1];
+                if (!d) { mm = T.match(/Описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные|Что нового|Особенности|$)/i); if (mm) d = mm[1]; }
+                if (!d) { const ogd = document.querySelector('meta[property="og:description"], meta[name="description"]'); if (ogd && ogd.content && ogd.content.length > 3) d = ogd.content; }
                 let ic = ''; const og = document.querySelector('meta[property="og:image"]'); if (og) ic = og.content;
                 if (!ic) { const im = post.querySelector('img'); if (im && im.src) ic = im.src; }
                 return { v, d: (d || '').replace(/\s+/g, ' ').trim().slice(0, 160), ic };
