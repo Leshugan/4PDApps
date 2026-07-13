@@ -1,11 +1,11 @@
 name: Build 4pda catalog
 run-name: >-
-  📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 3 * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
+  📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 * * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
 
 on:
   schedule:
-    - cron: '0 3 * * *'      # ежедневно 06:00 МСК — быстрый режим (свежие страницы)
-    - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход
+    - cron: '0 * * * *'      # каждый час — быстрое обновление (свежие темы + версии всплывших)
+    - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход (+ удаление пропавших)
   workflow_dispatch:
     inputs:
       mode:
@@ -96,6 +96,7 @@ jobs:
           const FAST_PAGES = 3; // быстрый режим: только первые страницы (свежее)
           const oldVersion = prev.version || 0;
           const oldMap = {}; for (const t in map) oldMap[t] = { n: map[t].n, f: map[t].f };
+          const freshSeen = new Set(); // темы, встреченные на свежих страницах этого прогона (всплыли = обновились)
 
           const browser = await chromium.launch({ headless: true });
           const ctx = await browser.newContext({
@@ -191,7 +192,9 @@ jobs:
                 const tid = m[1];
                 let name = (l.text || '').replace(/\s+/g, ' ').trim();
                 if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
+                freshSeen.add(tid);                                   // тема встречена на свежих страницах (могла обновиться)
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
+                else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
               }
               if (any === 0) { if (++emptyStreak >= 2) break; }
               else if (found === 0) { if (++noNew >= 5) break; } else noNew = 0;
@@ -210,21 +213,21 @@ jobs:
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
-            let cand = Object.values(map).filter(a => a.e !== EV);   // ещё не обогащённые текущим парсером
+            let cand = Object.values(map).filter(a => a.e !== EV || (a.pkg && !a.v) || (freshSeen.has(a.t) && a.pkg));   // не обогащённые + пакеты без версии + всплывшие темы (перечитать версию)
             cand.sort((a, b) => (+b.t) - (+a.t));                    // новые (больший id) — первыми
             cand = cand.slice(0, CAP);
             let en = 0;
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; } // версию не храним — грузится живьём при каждом запуске приложения
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; } // версию не храним — только привязка; версии живые в приложении
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
               await page.waitForTimeout(120);
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
             // остались ли необогащённые — для самозапуска следующего прогона (только полный режим)
-            const remaining = Object.values(map).filter(a => a.e !== EV).length;
+            const remaining = Object.values(map).filter(a => a.e !== EV || (a.pkg && !a.v)).length;
             console.log('осталось необогащённых: ' + remaining);
             if (MODE === 'full' && remaining > 0 && en > 0) { try { fs.writeFileSync('.need_more', String(remaining)); } catch {} }
           }
@@ -250,7 +253,7 @@ jobs:
 
       - name: Run crawler
         env:
-          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 3 * * *' && 'fast' || 'full') }}
+          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 * * * *' && 'fast' || 'full') }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
