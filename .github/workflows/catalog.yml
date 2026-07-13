@@ -179,11 +179,12 @@ jobs:
               const html = await open(url);
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
-              // подразделы этой категории — берём только на первой странице и только у seed-разделов (depth 0)
-              if (st === 0 && depth === 0) {
+              // подразделы — рекурсивно на ЛЮБОЙ глубине (пока не кончатся), внутри каталогов пользователя
+              if (st === 0) {
                 const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
                 let added = 0;
-                for (const s of subs) { if (added >= 25) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: 1 }); added++; } }
+                for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
+                if (added) console.log(`  раздел ${fid} (гл.${depth}): +${added} подразделов`);
               }
               const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
               // если страница повторяет предыдущую — пагинация зависла, выходим из раздела
@@ -198,6 +199,7 @@ jobs:
                 const tid = m[1];
                 let name = (l.text || '').replace(/\s+/g, ' ').trim();
                 if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
+                if (/\[(ios|iphone|ipad|ipados|wp7|wp8|wp10|wp|windows phone|symbian|java|bada|blackberry|bb10?|tizen|kaios|maemo|meego)\]/i.test(name)) continue; // не-Android — не берём
                 freshSeen.add(tid);                                   // тема встречена на свежих страницах (могла обновиться)
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
@@ -241,6 +243,9 @@ jobs:
           await browser.close();
 
           const newVersion = Date.now();
+          // вычистить не-Android темы, просочившиеся раньше (iOS/WP/Symbian и т.п.)
+          const NA_RE = /\[(ios|iphone|ipad|ipados|wp7|wp8|wp10|wp|windows phone|symbian|java|bada|blackberry|bb10?|tizen|kaios|maemo|meego)\]/i;
+          for (const k of Object.keys(map)) { if (NA_RE.test(map[k].n || '')) delete map[k]; }
           const apps = Object.values(map);
           // ВСЁ в одном файле: версия + приложения (пакет/версия/описание/иконка внутри записей)
           fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, withPkg: apps.filter(a => a.pkg).length, apps }));
