@@ -3,9 +3,6 @@ run-name: >-
   📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 * * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
 
 on:
-  schedule:
-    - cron: '0 * * * *'      # каждый час — быстрое обновление (свежие темы + версии всплывших)
-    - cron: '0 1 * * 0'      # по воскресеньям 04:00 МСК — полный обход (+ удаление пропавших)
   workflow_dispatch:
     inputs:
       mode:
