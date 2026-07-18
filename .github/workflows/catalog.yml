@@ -299,7 +299,7 @@ jobs:
               const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
               // если страница повторяет предыдущую — пагинация зависла, выходим из раздела
               const ids = links.map(l => (l.href.match(/showtopic=(\d+)/) || [])[1]).filter(Boolean);
-              const sig = ids.length + ':' + ids.slice(0, 6).join(',');
+              const sig = ids.slice().sort().join(','); // сравниваем ВЕСЬ набор тем страницы (а не первые 6) — иначе закреплённые темы вверху дают ложное «зависла»
               if (st > 0 && sig === lastSig) { console.log(`  forum ${fid}: пагинация зависла на стр. ${st / 30}, стоп`); break; }
               lastSig = sig;
               let found = 0, any = 0;
