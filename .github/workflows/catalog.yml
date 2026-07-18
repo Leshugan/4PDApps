@@ -238,9 +238,12 @@ jobs:
                  || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
             if (m) pkg = m[1];
-            // Play/market ссылки для пакета не разбираем — в приложении Google Play открывается по имени пакета установленной версии
             if (!pkg) { m = html.match(new RegExp("(?:apkpure\\.com|apkcombo\\.com|apkmonk\\.com|apkmirror\\.com|apkfab\\.com)/[^\"'\\s<>]*?/" + PKG, "i")); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/([a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,})[-_ v]{0,3}[\d._]*\.apk/i); if (m && m[1].length >= 7 && m[1].split('.').length >= 3) pkg = m[1]; }  // пакет из имени APK-файла (напр. com.x.y-2.apk)
+            // фолбэк: пакет из ссылки Google Play / market в теме (если пакет ещё не найден)
+            if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             // пакета в тексте нет — читаем его из последнего apk в теме (Range-чтение манифеста; нужна залогиненная сессия)
             if (!pkg && HAVE_COOKIE) {
               try {
@@ -322,7 +325,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 5; // подняли: все темы переобработаются — дочитать пакет из apk по Range у тех, где его нет в тексте
+            const EV = 6; // подняли: переобработка ради пакета из Play-ссылок (фолбэк) у тем, где пакета ещё нет
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
