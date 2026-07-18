@@ -45,6 +45,7 @@ jobs:
           import { chromium } from 'playwright';
           import fs from 'fs';
           import { execSync } from 'child_process';
+          import zlib from 'zlib';
 
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
@@ -96,12 +97,20 @@ jobs:
           const oldMap = {}; for (const t in map) oldMap[t] = { n: map[t].n, f: map[t].f };
           const freshSeen = new Set(); // темы, встреченные на свежих страницах этого прогона (всплыли = обновились)
 
+          const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
           const browser = await chromium.launch({ headless: true });
           const ctx = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            userAgent: UA,
             locale: 'ru-RU',
             viewport: { width: 1366, height: 900 },
           });
+          // куки залогиненной сессии 4pda из секрета FPDA_COOKIE — иначе вложения (apk) не отдаются
+          const RAW_COOKIE = (process.env.FPDA_COOKIE || '').trim();
+          let HAVE_COOKIE = false;
+          if (RAW_COOKIE) {
+            const cookies = RAW_COOKIE.split(';').map(s => s.trim()).filter(Boolean).map(pair => { const i = pair.indexOf('='); if (i < 0) return null; return { name: pair.slice(0, i).trim(), value: pair.slice(i + 1).trim(), domain: '.4pda.to', path: '/' }; }).filter(Boolean);
+            try { await ctx.addCookies(cookies); HAVE_COOKIE = cookies.some(c => c.name === 'member_id'); console.log('4pda-сессия: подставлено куки ' + cookies.length + (HAVE_COOKIE ? ' (member_id есть)' : ' (member_id НЕ найден!)')); } catch (e) { console.log('куки не подставились: ' + e.message); }
+          } else { console.log('FPDA_COOKIE пуст — пакет из apk читаться не будет, только регуляркой из шапки'); }
           const page = await ctx.newPage();
 
           async function open(url) {
@@ -121,6 +130,100 @@ jobs:
             return '';
           }
 
+          // ===== чтение пакета из apk по Range (как apkInfo в приложении): хвост ZIP + AndroidManifest.xml, без докачки всего файла =====
+          async function httpRange(url, range) {
+            try { return await ctx.request.get(url, { headers: { 'Range': range, 'User-Agent': UA, 'Referer': 'https://4pda.to/forum/' }, maxRedirects: 6, timeout: 60000, failOnStatusCode: false }); } catch { return null; }
+          }
+          function axmlStrings(d, chunkPos) {
+            const out = [];
+            try {
+              const stringCount = d.readUInt32LE(chunkPos + 8);
+              const flags = d.readUInt32LE(chunkPos + 16);
+              const utf8 = (flags & 0x100) !== 0;
+              const stringsStart = d.readUInt32LE(chunkPos + 20);
+              const offsetsBase = chunkPos + 28;
+              const dataBase = chunkPos + stringsStart;
+              for (let i = 0; i < stringCount; i++) {
+                const off = d.readUInt32LE(offsetsBase + i * 4);
+                const sp = dataBase + off;
+                if (sp < 0 || sp >= d.length) { out.push(''); continue; }
+                if (utf8) { let p = sp; const u = d[p]; p++; if (u & 0x80) p++; let blen = d[p]; p++; if (blen & 0x80) { blen = ((blen & 0x7F) << 8) | d[p]; p++; } out.push(d.toString('utf8', p, Math.min(p + blen, d.length))); }
+                else { let p = sp; let len = d[p] | (d[p + 1] << 8); p += 2; if (len & 0x8000) { len = ((len & 0x7FFF) << 16) | (d[p] | (d[p + 1] << 8)); p += 2; } out.push(d.toString('utf16le', p, Math.min(p + len * 2, d.length))); }
+              }
+            } catch {}
+            return out;
+          }
+          function axmlPackage(d) {
+            try {
+              if (!d || d.length < 8) return '';
+              let strings = null; let pos = 8;
+              while (pos + 8 <= d.length) {
+                const type = d.readUInt16LE(pos); const size = d.readUInt32LE(pos + 4);
+                if (size <= 0 || pos + size > d.length) break;
+                if (type === 0x0001) strings = axmlStrings(d, pos);
+                else if (type === 0x0102 && strings) {
+                  const nameIdx = d.readInt32LE(pos + 20); const attrStart = d.readUInt16LE(pos + 24); const attrCount = d.readUInt16LE(pos + 28);
+                  const tag = (nameIdx >= 0 && nameIdx < strings.length) ? strings[nameIdx] : '';
+                  if (tag === 'manifest') {
+                    const ap = pos + 16 + attrStart;
+                    for (let i = 0; i < attrCount; i++) {
+                      const base = ap + i * 20; if (base + 20 > d.length) break;
+                      const aName = d.readInt32LE(base + 4); const aRaw = d.readInt32LE(base + 8);
+                      const an = (aName >= 0 && aName < strings.length) ? strings[aName] : '';
+                      if (an === 'package' && aRaw >= 0 && aRaw < strings.length && strings[aRaw]) return strings[aRaw];
+                    }
+                  }
+                }
+                pos += size;
+              }
+            } catch {}
+            return '';
+          }
+          async function readZipEntry(url, lho, compSize, method) {
+            const PAD = 512;
+            const resp = await httpRange(url, 'bytes=' + lho + '-' + (lho + 30 + PAD + compSize - 1));
+            if (!resp) return null;
+            const buf = Buffer.from(await resp.body());
+            if (buf.length < 30) return null;
+            const nameLen = buf.readUInt16LE(26), extraLen = buf.readUInt16LE(28);
+            const dataStart = 30 + nameLen + extraLen;
+            let comp;
+            if (dataStart + compSize <= buf.length) comp = buf.slice(dataStart, dataStart + compSize);
+            else { const r2 = await httpRange(url, 'bytes=' + (lho + dataStart) + '-' + (lho + dataStart + compSize - 1)); if (!r2) return null; comp = Buffer.from(await r2.body()); }
+            if (method === 0) return comp;
+            try { return zlib.inflateRawSync(comp); } catch { return null; }
+          }
+          async function pkgFromApk(url) {
+            try {
+              const resp = await httpRange(url, 'bytes=-65600');
+              if (!resp) return '';
+              const h = resp.headers(); const ct = (h['content-type'] || '').toLowerCase(); const cr = h['content-range'] || '';
+              if (resp.status() !== 206 || !cr || ct.includes('text/html')) return ''; // кусок не отдали / нужен вход
+              const tail = Buffer.from(await resp.body());
+              let tailStart = 0; const mm = cr.match(/bytes\s+(\d+)-/i); if (mm) tailStart = parseInt(mm[1], 10);
+              let eocd = -1;
+              for (let i = tail.length - 22; i >= 0; i--) { if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) { eocd = i; break; } }
+              if (eocd < 0) return '';
+              const cdSize = tail.readUInt32LE(eocd + 12); const cdOff = tail.readUInt32LE(eocd + 16);
+              let cd; const cdStartInTail = cdOff - tailStart;
+              if (cdStartInTail >= 0 && cdStartInTail + cdSize <= tail.length) cd = tail.slice(cdStartInTail, cdStartInTail + cdSize);
+              else { const r = await httpRange(url, 'bytes=' + cdOff + '-' + (cdOff + cdSize - 1)); if (!r) return ''; cd = Buffer.from(await r.body()); }
+              let manOff = -1, manComp = 0, manMethod = 0; let p = 0;
+              while (p + 46 <= cd.length) {
+                if (cd.readUInt32LE(p) !== 0x02014b50) break;
+                const method = cd.readUInt16LE(p + 10); const compSize = cd.readUInt32LE(p + 20);
+                const nameLen = cd.readUInt16LE(p + 28), extraLen = cd.readUInt16LE(p + 30), commentLen = cd.readUInt16LE(p + 32);
+                const lho = cd.readUInt32LE(p + 42);
+                const name = cd.toString('utf8', p + 46, p + 46 + nameLen);
+                if (name === 'AndroidManifest.xml') { manOff = lho; manComp = compSize; manMethod = method; break; }
+                p += 46 + nameLen + extraLen + commentLen;
+              }
+              if (manOff < 0) return '';
+              const raw = await readZipEntry(url, manOff, manComp, manMethod);
+              return raw ? axmlPackage(raw) : '';
+            } catch { return ''; }
+          }
+
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           async function extractHat(topicId) {
             const html = await open('https://4pda.to/forum/index.php?showtopic=' + topicId);
@@ -135,11 +238,16 @@ jobs:
                  || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
             if (m) pkg = m[1];
-            if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
-            if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
-            if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            // Play/market ссылки для пакета не разбираем — в приложении Google Play открывается по имени пакета установленной версии
             if (!pkg) { m = html.match(new RegExp("(?:apkpure\\.com|apkcombo\\.com|apkmonk\\.com|apkmirror\\.com|apkfab\\.com)/[^\"'\\s<>]*?/" + PKG, "i")); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/([a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,})[-_ v]{0,3}[\d._]*\.apk/i); if (m && m[1].length >= 7 && m[1].split('.').length >= 3) pkg = m[1]; }  // пакет из имени APK-файла (напр. com.x.y-2.apk)
+            // пакета в тексте нет — читаем его из последнего apk в теме (Range-чтение манифеста; нужна залогиненная сессия)
+            if (!pkg && HAVE_COOKIE) {
+              try {
+                const apkUrls = await page.$$eval('a[href]', els => els.map(a => a.href).filter(h => /\/dl\/post\/\d+\/[^?#]+\.(?:apk|apks|xapk)(?:\?|#|$)/i.test(h)));
+                if (apkUrls.length) { const pk = await pkgFromApk(apkUrls[apkUrls.length - 1]); if (pk && pk.includes('.')) { pkg = pk; } }
+              } catch {}
+            }
             // версия/описание/иконка — из первого поста
             let v = '', d = '', ic = '';
             try {
@@ -214,7 +322,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 4; // версия парсера обогащения (подняли — все темы переобработаются: заполнить описания через og:description)
+            const EV = 5; // подняли: все темы переобработаются — дочитать пакет из apk по Range у тех, где его нет в тексте
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
@@ -262,6 +370,7 @@ jobs:
       - name: Run crawler
         env:
           MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 * * * *' && 'fast' || 'full') }}
+          FPDA_COOKIE: ${{ secrets.FPDA_COOKIE }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
