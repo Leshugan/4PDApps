@@ -1,20 +1,20 @@
-name: Build APK
-run-name: "🔨 Сборка APK 4PDApps"
+name: Build Android APK
+run-name: "🔨 Сборка APK Notenger"
 
 on:
   push:
-    branches: [main]
-    paths:                          # собирать APK только когда меняется сам проект,
-      - 'Project_4PDApps.zip'       # а не catalog.json/versions.json/catalog.yml
+    branches: [ main, master ]
+    paths:
+      - '*.zip'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-apk-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 jobs:
@@ -23,15 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Распаковать архив проекта в корень
+      - name: Распаковать архив проекта
         run: |
           set -e
-          # В корне репозитория лежит только этот workflow + Project_4PDApps.zip.
-          if [ ! -f Project_4PDApps.zip ]; then
-            echo "ОШИБКА: нет Project_4PDApps.zip в корне репозитория."; exit 1
+          ARCH=$(ls *.zip 2>/dev/null | head -1)
+          if [ -z "$ARCH" ]; then
+            echo "::error::Не найден архив проекта (*.zip) в корне репозитория"; exit 1
           fi
-          unzip -o -q Project_4PDApps.zip -d _extracted
-          if [ -d _extracted/Project_4PDApps ]; then SRC=_extracted/Project_4PDApps; else SRC=_extracted; fi
+          echo "Распаковываю $ARCH"
+          unzip -o -q "$ARCH" -d _extracted
+          INNER=$(find _extracted -maxdepth 1 -mindepth 1 -type d | head -1)
+          if [ -n "$INNER" ] && [ -f "$INNER/package.json" ]; then SRC="$INNER"; else SRC=_extracted; fi
           shopt -s dotglob
           for item in "$SRC"/*; do
             name=$(basename "$item")
@@ -41,13 +43,20 @@ jobs:
           done
           shopt -u dotglob
           rm -rf _extracted
-          rm -f Project_4PDApps.zip
+          rm -f "$ARCH"
           echo "=== корень после распаковки ===" && ls -la
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+
+      - name: Кэш npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
 
       - uses: actions/setup-java@v4
         with:
@@ -59,93 +68,110 @@ jobs:
         with:
           cache-read-only: false
 
-      - name: Install dependencies
-        run: npm install
+      - name: Установить зависимости
+        run: npm install --legacy-peer-deps
 
-      - name: Build web
+      - name: Собрать веб-приложение
         run: npm run build
 
-      - name: Add Android platform
+      - name: Добавить Android-проект (Capacitor)
         run: |
-          rm -rf android            # снести старую платформу — иначе cap add пропустит свежую сборку
-          rm -f capacitor.config.ts # в архиве только JSON-конфиг
+          set -e
+          rm -rf android
+          rm -f capacitor.config.ts
           npx cap add android
-          npx cap copy android      # принудительно скопировать свежий web-бандл (dist) в ассеты
+          npx cap copy android
           {
             echo "org.gradle.caching=true"
             echo "org.gradle.parallel=true"
             echo "org.gradle.configureondemand=true"
             echo "org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8"
           } >> android/gradle.properties
-          # Kotlin plugin (код Google Play API из gplayapi — на Kotlin)
-          sed -i "s#classpath 'com.android.tools.build:gradle.*#&\n        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.21'#" android/build.gradle
-          sed -i "s#apply plugin: 'com.android.application'#apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'#" android/app/build.gradle
-          # зависимости: gplayapi (Maven Central) + gson + okhttp + coroutines
-          sed -i 's#dependencies {#dependencies {\n    implementation "com.auroraoss:gplayapi:3.5.8"\n    implementation "com.google.code.gson:gson:2.10.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"#' android/app/build.gradle
-          # JVM target Kotlin = 17 (как у Java в Capacitor)
-          printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
-          echo "----- deps -----" && grep -E "gplayapi|okhttp|coroutines|kotlin-gradle|kotlin-android" android/build.gradle android/app/build.gradle || true
 
-      - name: Generate app icons
+      - name: Сгенерировать иконки приложения
         run: |
-          # Рендерим icon.svg в icon.png через sharp, затем генерим наборы иконок
-          if [ -f resources/icon.svg ]; then
-            npm i -g sharp-cli >/dev/null 2>&1 || npm i sharp >/dev/null 2>&1 || true
-            node -e "const s=require('sharp');s('resources/icon.svg',{density:300}).resize(1024,1024).png().toFile('resources/icon.png').then(()=>console.log('svg->png ok')).catch(e=>{console.log('render skip:',e.message)})" || echo "sharp render skipped"
-          fi
+          set -e
           npx @capacitor/assets generate --android --assetPath resources
+          echo "=== иконки ===" && ls android/app/src/main/res/mipmap-xxxhdpi/
 
-      - name: Add Android permissions
+      - name: Прописать разрешения и версию
         run: |
-          MAN=android/app/src/main/AndroidManifest.xml
-          if ! grep -q "QUERY_ALL_PACKAGES" "$MAN"; then
-            sed -i 's#<application#<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n\n    <application#' "$MAN"
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          PERMS='<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>'
+          if ! grep -q "RECORD_AUDIO" "$MANIFEST"; then
+            sed -i "s|<application|$PERMS\n    <application|" "$MANIFEST"
           fi
-          # запись в общее хранилище (стар. Android) + доступ ко всем файлам (Android 11+) + фоновая служба загрузок
-          if ! grep -q "WRITE_EXTERNAL_STORAGE" "$MAN"; then
-            sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />\n\n    <application#' "$MAN"
+          GRADLE=android/app/build.gradle
+          sed -i 's/versionCode .*/versionCode 2/' "$GRADLE"
+          sed -i 's/versionName .*/versionName "0.2"/' "$GRADLE"
+          sed -i -E 's/applicationId[[:space:]]*=?[[:space:]]*"[^"]*"/applicationId "leshugan.notenger"/' "$GRADLE"
+          sed -i -E 's/namespace[[:space:]]*=?[[:space:]]*"[^"]*"/namespace "leshugan.notenger"/' "$GRADLE"
+          echo "=== build.gradle (id) ==="; grep -E "applicationId|namespace" "$GRADLE"
+          if ! grep -q "leshugan.notenger" "$GRADLE"; then echo "::error::appId не установлен!"; exit 1; fi
+          if ! grep -q "play-services-auth" "$GRADLE"; then
+            sed -i 's|dependencies {|dependencies {\n    implementation "com.google.android.gms:play-services-auth:21.2.0"|' "$GRADLE"
           fi
-          # legacy-доступ к файлам (для списка «Загрузок» на Android 10)
-          sed -i 's#<application #<application android:requestLegacyExternalStorage="true" #' "$MAN"
-          # старый back-callback, чтобы кнопка/жест «Назад» доходили до приложения
-          sed -i 's#<application #<application android:enableOnBackInvokedCallback="false" #' "$MAN"
-          # экран 4pda внутри приложения (WebView)
-          if ! grep -q "leshugan.a4pda.WebViewActivity" "$MAN"; then
-            sed -i 's#</application>#    <activity android:name="leshugan.a4pda.WebViewActivity" android:configChanges="keyboardHidden|orientation|screenSize" android:exported="false" />\n    </application>#' "$MAN"
+          RESXML=android/app/src/main/res/xml
+          mkdir -p "$RESXML"
+          cp native/file_paths.xml "$RESXML/file_paths.xml"
+          if ! grep -q "fileprovider" "$MANIFEST"; then
+            PROVIDER='<provider android:name="androidx.core.content.FileProvider" android:authorities="leshugan.notenger.fileprovider" android:exported="false" android:grantUriPermissions="true">\n        <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths"/>\n      </provider>'
+            sed -i "s|</application>|    $PROVIDER\n    </application>|" "$MANIFEST"
           fi
-          echo "----- manifest -----"
-          grep -E "uses-permission|enableOnBackInvokedCallback|WebViewActivity" "$MAN" || true
 
-      - name: Install native Apps plugin
+      - name: Установить нативный код (MainActivity + мосты)
         run: |
-          PKG=android/app/src/main/java/leshugan/a4pda
-          mkdir -p "$PKG" android/app/src/main/res/xml
-          cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
-          cp native/MainActivity.java "$PKG/MainActivity.java"
-          cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
-          cp native/*.kt "$PKG/" 2>/dev/null || echo "WARN: no .kt files in native/ (нужен свежий Project_4PDApps.zip)"
-          # пути FileProvider (для установки apk из «Загрузок») — весь внешний storage
-          printf '%s\n' '<paths>' '  <external-path name="ext" path="." />' '  <external-files-path name="extfiles" path="." />' '  <cache-path name="cache" path="." />' '  <files-path name="files" path="." />' '</paths>' > android/app/src/main/res/xml/file_paths.xml
-          echo "native files:" && ls -la "$PKG"
+          set -e
+          MA=$(find android/app/src/main/java -name "MainActivity.java" | head -1)
+          PKG=$(grep -m1 '^package' "$MA" | sed 's/package //;s/;//')
+          echo "Пакет: $PKG"
+          sed "s/__PKG__/$PKG/" native/MainActivity.java > "$MA"
+          echo "=== MainActivity установлен ===" && head -5 "$MA"
 
-      - name: Sync Capacitor
-        run: npx cap sync android
+      - name: Подготовить ключ подписи
+        run: |
+          set -e
+          if [ ! -f notenger.keystore.b64 ]; then
+            echo "::error::нет файла notenger.keystore.b64 в архиве проекта"; exit 1
+          fi
+          base64 -d notenger.keystore.b64 > android/app/notenger.keystore
+          echo "keystore готов"
 
-      - name: Build signed release APK
+      - name: Собрать подписанный APK
         working-directory: android
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --build-cache \
-            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/uc.jks" \
-            -Pandroid.injected.signing.store.password="updatechecker" \
-            -Pandroid.injected.signing.key.alias="uc" \
-            -Pandroid.injected.signing.key.password="updatechecker"
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/android/app/notenger.keystore" \
+            -Pandroid.injected.signing.store.password="android" \
+            -Pandroid.injected.signing.key.alias="androiddebugkey" \
+            -Pandroid.injected.signing.key.password="android"
 
-      - name: Upload APK
+      - name: Загрузить готовый APK (артефакт)
+        id: upload_artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: 4PDApps_APK
+          name: Notenger_Compiled
           path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Выложить APK в релиз (квота артефактов исчерпана)
+        if: steps.upload_artifact.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          TAG=apk-latest
+          NOTES="Автосборка #${{ github.run_number }} от $(date -u +'%Y-%m-%d %H:%M UTC') — выложено в релиз, т.к. квота артефактов исчерпана."
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --notes "$NOTES"
+          else
+            gh release create "$TAG" --repo "$REPO" --title "Notenger APK" --notes "$NOTES"
+          fi
+          gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
+          echo "::notice::Квота артефактов исчерпана — APK в релизе $TAG"
 
   cleanup:
     needs: build
@@ -154,16 +180,14 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Delete old runs and APKs (keep last 10 successful)
+      - name: Удалить старые запуски и APK (оставить 10 последних)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           WF=build.yml
-          echo "Оставляем 10 последних успешных запусков:"
           KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
-          echo "$KEEP"
-          echo "Удаляем остальные запуски и их APK:"
+          echo "Оставляем: $KEEP"
           gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
             [ "$id" = "$GITHUB_RUN_ID" ] && continue
             if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
