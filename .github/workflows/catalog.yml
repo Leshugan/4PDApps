@@ -49,8 +49,10 @@ jobs:
 
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
+          // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; return o; }); }
           function saveAndCommit(label, mapRef) {
-            const apps = Object.values(mapRef);
+            const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
             try { fs.writeFileSync('catalog.json', JSON.stringify(out)); } catch (e) { return; }
             if (committing) return; committing = true;
@@ -336,7 +338,7 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.ic) a.ic = h.ic; a.e = EV; } // версию не храним — только привязка; версии живые в приложении
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; a.e = EV; } // d/ic не храним — только привязка и версия; описание/иконка тянутся в приложении на лету
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
               await page.waitForTimeout(120);
@@ -354,8 +356,8 @@ jobs:
           // вычистить не-Android темы, просочившиеся раньше (iOS/WP/Symbian и т.п.)
           const NA_RE = /\[(ios|iphone|ipad|ipados|wp7|wp8|wp10|wp|windows phone|symbian|java|bada|blackberry|bb10?|tizen|kaios|maemo|meego)\]/i;
           for (const k of Object.keys(map)) { if (NA_RE.test(map[k].n || '')) delete map[k]; }
-          const apps = Object.values(map);
-          // ВСЁ в одном файле: версия + приложения (пакет/версия/описание/иконка внутри записей)
+          const apps = slim(map);
+          // отдаём только связь+поиск: t, n, f, pkg, v (+ e). Описание/иконка в файле не хранятся — приложение тянет их для видимых карточек.
           fs.writeFileSync('catalog.json', JSON.stringify({ updated: new Date().toISOString(), version: newVersion, count: apps.length, withPkg: apps.filter(a => a.pkg).length, apps }));
           // лишние файлы больше не нужны — удаляем из репозитория
           for (const f of ['version.json', 'versions.json', 'changes.json']) { try { fs.unlinkSync(f); } catch {} }
