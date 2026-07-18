@@ -331,7 +331,7 @@ jobs:
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
-            let cand = Object.values(map).filter(a => a.e !== EV || (a.pkg && !a.v) || (freshSeen.has(a.t) && a.pkg));   // не обогащённые + пакеты без версии + всплывшие темы (перечитать версию)
+            let cand = Object.values(map).filter(a => a.e !== EV || (freshSeen.has(a.t) && a.pkg));   // не обогащённые + всплывшие темы (перечитать версию); версию без надобности не долбим — приложение берёт её живьём
             cand.sort((a, b) => (+b.t) - (+a.t));                    // новые (больший id) — первыми
             cand = cand.slice(0, CAP);
             let en = 0;
@@ -345,7 +345,7 @@ jobs:
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
             // остались ли необогащённые — для самозапуска следующего прогона (только полный режим)
-            const remaining = Object.values(map).filter(a => a.e !== EV || (a.pkg && !a.v)).length;
+            const remaining = Object.values(map).filter(a => a.e !== EV).length;
             console.log('осталось необогащённых: ' + remaining);
             if (MODE === 'full' && remaining > 0 && en > 0) { try { fs.writeFileSync('.need_more', String(remaining)); } catch {} }
           }
