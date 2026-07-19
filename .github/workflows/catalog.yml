@@ -282,34 +282,31 @@ jobs:
             doneForums.add(fid);
             if (DROP_F.has(fid)) { console.log(`forum ${fid} пропущен (не из каталогов)`); continue; }
             processed++;
-            let emptyStreak = 0, noNew = 0, pageNo = 0;
-            const seenPages = new Set();        // уже загруженные URL страниц
-            const seenSigs = new Set();         // уже виденные наборы тем (4pda игнорирует st и отдаёт ту же страницу)
-            const toVisit = [`https://4pda.to/forum/index.php?showforum=${fid}&st=0`];
-            const pageCap = MODE === 'fast' ? FAST_PAGES : 1400;
-            while (toVisit.length && pageNo < pageCap) {
-              const url = toVisit.shift();
-              if (seenPages.has(url)) continue; seenPages.add(url);
+            let emptyStreak = 0, noNew = 0;
+            const seenSigs = new Set();
+            for (let st = 0; st <= 40000; st += 30) {
+              if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
+              const url = `https://4pda.to/forum/index.php?showforum=${fid}&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=${st}`;
               const html = await open(url);
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
-              // подразделы — рекурсивно на ЛЮБОЙ глубине, внутри каталогов пользователя (только на первой странице раздела)
-              if (pageNo === 0) {
-                const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
+              // подразделы: 4pda перешёл на SEO-ссылки, id раздела теперь в атрибуте id="f-NNN"
+              if (st === 0) {
+                const subs = await page.$$eval('a[id^="f-"]', els => els.map(a => (a.id.match(/^f-(\d+)/) || [])[1]).filter(Boolean)).catch(() => []);
                 let added = 0;
                 for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
                 if (added) console.log(`  раздел ${fid} (гл.${depth}): +${added} подразделов`);
               }
-              const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
-              const ids = links.map(l => (l.href.match(/showtopic=(\d+)/) || [])[1]).filter(Boolean);
+              // темы: id теперь в атрибуте data-topic, название — в .topic_title (было showtopic= в href)
+              const links = await page.$$eval('[data-topic]', els => els.map(d => { const id = d.getAttribute('data-topic'); const a = d.querySelector('.topic_title a') || d.querySelector('a'); return { id: id, text: a ? (a.textContent || '').trim() : '' }; }).filter(x => x.id)).catch(() => []);
+              const ids = links.map(l => l.id).filter(Boolean);
               const sig = ids.slice().sort().join(',');
-              if (sig && seenSigs.has(sig)) { pageNo++; continue; } // 4pda вернул уже виденную страницу (st игнорируется) — пропускаем, ссылки её не добавляем
+              if (st > 0 && (!ids.length || seenSigs.has(sig))) { console.log(`  forum ${fid}: страницы кончились на стр. ${st / 30}`); break; } // пусто или повтор (4pda мог игнорировать st) — стоп
               seenSigs.add(sig);
               let found = 0, any = 0;
               for (const l of links) {
-                const m = l.href.match(/showtopic=(\d+)/); if (!m) continue;
+                const tid = l.id; if (!tid) continue;
                 any++;
-                const tid = m[1];
                 let name = (l.text || '').replace(/\s+/g, ' ').trim();
                 if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
                 if (/\[(ios|iphone|ipad|ipados|wp7|wp8|wp10|wp|windows phone|symbian|java|bada|blackberry|bb10?|tizen|kaios|maemo|meego)\]/i.test(name)) continue; // не-Android — не берём
@@ -317,14 +314,10 @@ jobs:
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
               }
-              // настоящие ссылки пагинации этого раздела (какой бы параметр 4pda ни использовал: st / page / /page/N/)
-              const pl = await page.$$eval('a[href]', (els, f) => els.map(a => a.href).filter(h => h && h.indexOf('showforum=' + f) >= 0 && /[?&](st|page)=\d|\/page\/\d/i.test(h)).map(h => h.split('#')[0]), fid).catch(() => []);
-              for (const u of (pl || [])) { if (!seenPages.has(u) && toVisit.indexOf(u) < 0) toVisit.push(u); }
               if (any === 0) { if (++emptyStreak >= 2) break; }
-              else if (found === 0) { if (++noNew >= 6) break; } else noNew = 0;
-              if (pageNo % 10 === 0) console.log(`  forum ${fid}: page ${pageNo}, total ${Object.keys(map).length}, в очереди стр.: ${toVisit.length}`);
-              if (pageNo % 150 === 149) saveAndCommit(`forum ${fid} стр.${pageNo}`, map); // сохраняем по ходу
-              pageNo++;
+              else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
+              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, total ${Object.keys(map).length}`);
+              if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
               await page.waitForTimeout(200);
             }
             total = Object.keys(map).length;
