@@ -119,6 +119,15 @@ jobs:
           } else { console.log('FPDA_COOKIE пуст'); }
           const page = await ctx.newPage();
 
+          // список раздела тянем СЫРЫМ HTTP через WARP: сервер отдаёт классическую вёрстку с data-topic, а браузер — другую, без data-topic
+          async function fetchHtml(url) {
+            try {
+              const resp = await ctx.request.get(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*', 'Referer': 'https://4pda.to/forum/' }, maxRedirects: 6, timeout: 60000, failOnStatusCode: false });
+              const buf = Buffer.from(await resp.body());
+              try { return new TextDecoder('windows-1251').decode(buf); } catch { return buf.toString('utf8'); }
+            } catch { return ''; }
+          }
+
           async function open(url) {
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
@@ -153,7 +162,6 @@ jobs:
                  || html.match(new RegExp("package\\s*name[\\s\\S]{0,40}?" + PKG, "i"))
                  || html.match(new RegExp("packageName['\":\\s]{0,8}" + PKG, "i"));
             if (m) pkg = m[1];
-            if (!pkg) { m = html.match(new RegExp("(?:apkpure\\.com|apkcombo\\.com|apkmonk\\.com|apkmirror\\.com|apkfab\\.com)/[^\"'\\s<>]*?/" + PKG, "i")); if (m) pkg = m[1]; }
             // фолбэк: пакет из ссылки Google Play / market в теме (если пакет ещё не найден)
             if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
@@ -196,35 +204,23 @@ jobs:
             for (let st = 0; st <= 40000; st += 30) {
               if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
               const url = `https://4pda.to/forum/index.php?showforum=${fid}&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=${st}`;
-              const html = await open(url);
-              if (st === 0 && !DBG_DONE) {
-                DBG_DONE = true;
-                const durl = page.url();
-                const dtitle = await page.title().catch(() => '');
-                const H = html || '';
-                const low = H.toLowerCase();
-                const flags = ['just a moment','attention required','cf-chl','challenge-platform','_cf_chl','act=login','name="password"','type="password"','sign in','войдите','регистраци'].filter(s => low.includes(s));
-                console.log('=== DEBUG раздел ' + fid + ' стр.0 ===');
-                console.log('URL после загрузки: ' + durl);
-                console.log('title: ' + dtitle);
-                console.log('html length: ' + H.length);
-                console.log('счётчики в html: data-topic=' + ((H.match(/data-topic/g) || []).length) + ' topic_title=' + ((H.match(/topic_title/g) || []).length) + ' f-NNN=' + ((H.match(/id="f-\d+/g) || []).length) + ' showforum=' + ((H.match(/showforum/g) || []).length) + ' showtopic=' + ((H.match(/showtopic/g) || []).length));
-                console.log('флаги CF/логин: ' + (flags.join(', ') || 'нет'));
-                console.log('--- первые 1500 символов HTML ---');
-                console.log(H.slice(0, 1500).replace(/\s+/g, ' '));
-                console.log('=== /DEBUG ===');
-              }
+              const html = await fetchHtml(url);
+              if (st === 0 && !DBG_DONE) { DBG_DONE = true; console.log('  раздел ' + fid + ' стр.0: html ' + (html || '').length + ' симв, data-topic=' + (((html || '').match(/data-topic/g) || []).length) + ', f-NNN=' + (((html || '').match(/id="f-\d+/g) || []).length)); }
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
               // подразделы: 4pda перешёл на SEO-ссылки, id раздела теперь в атрибуте id="f-NNN"
               if (st === 0) {
-                const subs = await page.$$eval('a[id^="f-"]', els => els.map(a => (a.id.match(/^f-(\d+)/) || [])[1]).filter(Boolean)).catch(() => []);
+                const subs = [...new Set([...html.matchAll(/id="f-(\d+)"/g)].map(m => m[1]))];
                 let added = 0;
                 for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
                 console.log(`  раздел ${fid} (гл.${depth}): подразделов на стр. ${subs.length}, добавлено ${added}`);
               }
-              // темы: id теперь в атрибуте data-topic, название — в .topic_title (было showtopic= в href)
-              const links = await page.$$eval('[data-topic]', els => els.map(d => { const id = d.getAttribute('data-topic'); const a = d.querySelector('.topic_title a') || d.querySelector('a'); return { id: id, text: a ? (a.textContent || '').trim() : '' }; }).filter(x => x.id)).catch(() => []);
+              // темы: <div data-topic="ID"><div class="topic_title">...<a ...>НАЗВАНИЕ</a>
+              const links = [];
+              for (const mm of html.matchAll(/data-topic="(\d+)"[^>]*>\s*<div[^>]*class="[^"]*\btopic_title\b[^"]*"[^>]*>[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/g)) {
+                const txt = mm[2].replace(/<[^>]+>/g, '').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+                links.push({ id: mm[1], text: txt });
+              }
               const ids = links.map(l => l.id).filter(Boolean);
               const sig = ids.slice().sort().join(',');
               if (st > 0 && (!ids.length || seenSigs.has(sig))) { console.log(`  forum ${fid}: страницы кончились на стр. ${st / 30}`); break; } // пусто или повтор (4pda мог игнорировать st) — стоп
@@ -244,7 +240,7 @@ jobs:
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
               if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
-              await page.waitForTimeout(200);
+              await new Promise(r => setTimeout(r, 120));
             }
             total = Object.keys(map).length;
             console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
