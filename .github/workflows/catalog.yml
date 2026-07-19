@@ -36,13 +36,14 @@ jobs:
       - name: Install Playwright + Chromium
         run: |
           npm init -y >/dev/null 2>&1 || true
-          npm i playwright@1.47.2 >/dev/null 2>&1
-          npx playwright install --with-deps chromium
+          npm i patchright >/dev/null 2>&1
+          npx patchright install --with-deps chromium
+          sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y xvfb >/dev/null 2>&1
 
       - name: Write crawler
         run: |
           cat > crawl.mjs << 'CRAWLER'
-          import { chromium } from 'playwright';
+          import { chromium } from 'patchright';
           import fs from 'fs';
           import { execSync } from 'child_process';
           import zlib from 'zlib';
@@ -100,19 +101,11 @@ jobs:
           const freshSeen = new Set(); // темы, встреченные на свежих страницах этого прогона (всплыли = обновились)
 
           const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-          const browser = await chromium.launch({ headless: true, args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'] });
+          const browser = await chromium.launch({ headless: false, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
           const ctx = await browser.newContext({
-            userAgent: UA,
             locale: 'ru-RU',
             viewport: { width: 1366, height: 900 },
             extraHTTPHeaders: { 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7' },
-          });
-          // маскировка автоматизации — чтобы пройти JS-проверку Cloudflare
-          await ctx.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            window.chrome = window.chrome || { runtime: {} };
           });
           // куки залогиненной сессии 4pda из секрета FPDA_COOKIE — иначе вложения (apk) не отдаются
           const RAW_COOKIE = (process.env.FPDA_COOKIE || '').trim();
@@ -411,7 +404,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Режим: $MODE"
-          node crawl.mjs
+          xvfb-run -a node crawl.mjs
 
       - name: Commit (safety net)
         if: always()
