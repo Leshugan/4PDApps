@@ -100,20 +100,57 @@ jobs:
           const freshSeen = new Set(); // темы, встреченные на свежих страницах этого прогона (всплыли = обновились)
 
           const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+          // FPDA_COOKIE может быть в формате "<user-agent>|||<куки>" (экспорт из приложения) — тогда UA берём тот же, что в приложении, чтобы cf_clearance подошла
+          const RAW_ENV = (process.env.FPDA_COOKIE || '').trim();
+          let UA_OVERRIDE = '', RAW_COOKIE = RAW_ENV;
+          { const s = RAW_ENV.indexOf('|||'); if (s >= 0) { UA_OVERRIDE = RAW_ENV.slice(0, s).trim(); RAW_COOKIE = RAW_ENV.slice(s + 3).trim(); } }
+          if (UA_OVERRIDE) console.log('UA из приложения подставлен');
           const browser = await chromium.launch({ headless: true });
           const ctx = await browser.newContext({
-            userAgent: UA,
+            userAgent: UA_OVERRIDE || UA,
             locale: 'ru-RU',
             viewport: { width: 1366, height: 900 },
           });
-          // куки залогиненной сессии 4pda из секрета FPDA_COOKIE — иначе вложения (apk) не отдаются
-          const RAW_COOKIE = (process.env.FPDA_COOKIE || '').trim();
+          // куки залогиненной сессии 4pda (+ cf_clearance) из секрета FPDA_COOKIE
           let HAVE_COOKIE = false;
           if (RAW_COOKIE) {
             const cookies = RAW_COOKIE.split(';').map(s => s.trim()).filter(Boolean).map(pair => { const i = pair.indexOf('='); if (i < 0) return null; return { name: pair.slice(0, i).trim(), value: pair.slice(i + 1).trim(), domain: '.4pda.to', path: '/' }; }).filter(Boolean);
-            try { await ctx.addCookies(cookies); HAVE_COOKIE = cookies.some(c => c.name === 'member_id'); console.log('4pda-сессия: подставлено куки ' + cookies.length + (HAVE_COOKIE ? ' (member_id есть)' : ' (member_id НЕ найден!)')); } catch (e) { console.log('куки не подставились: ' + e.message); }
-          } else { console.log('FPDA_COOKIE пуст — пакет из apk читаться не будет, только регуляркой из шапки'); }
+            try { await ctx.addCookies(cookies); HAVE_COOKIE = cookies.some(c => c.name === 'member_id'); console.log('4pda-сессия: подставлено куки ' + cookies.length + (cookies.some(c => c.name === 'cf_clearance') ? ' (cf_clearance ЕСТЬ)' : ' (cf_clearance НЕТ!)')); } catch (e) { console.log('куки не подставились: ' + e.message); }
+          } else { console.log('FPDA_COOKIE пуст'); }
           const page = await ctx.newPage();
+
+          // === РАЗВЕДКА: пробуем "машинные" точки 4pda сырым HTTP (без браузера) — где открыто, где заслон ===
+          async function probe(url, full) {
+            try {
+              const resp = await ctx.request.get(url, { headers: { 'User-Agent': UA_OVERRIDE || UA, 'Accept': 'text/html,application/xml,text/xml,application/rss+xml,*/*', 'Referer': 'https://4pda.to/' }, maxRedirects: 6, timeout: 45000, failOnStatusCode: false });
+              let body = ''; try { body = await resp.text(); } catch {}
+              const cf = /один момент|just a moment|_cf_chl|challenge-platform|attention required/i.test(body) ? 'ЗАСЛОН-CF' : 'ОТКРЫТО';
+              const h = [];
+              const it = (body.match(/<item[\s>]/gi) || []).length; if (it) h.push('RSS-item:' + it);
+              const su = (body.match(/<url>/gi) || []).length; if (su) h.push('sitemap-url:' + su);
+              if (/<sitemapindex/i.test(body)) h.push('sitemap-index');
+              const stc = (body.match(/showtopic=\d+/gi) || []).length; if (stc) h.push('showtopic:' + stc);
+              const dt = (body.match(/data-topic=\"?\d+/gi) || []).length; if (dt) h.push('data-topic:' + dt);
+              console.log('PROBE ' + url + ' -> ' + resp.status() + ' ' + (resp.headers()['content-type'] || '') + ' len=' + body.length + ' [' + cf + ']' + (h.length ? ' ' + h.join(' ') : ''));
+              console.log('   ' + body.slice(0, full ? 900 : 260).replace(/\s+/g, ' '));
+              return body;
+            } catch (e) { console.log('PROBE ' + url + ' -> ОШИБКА ' + e.message); return ''; }
+          }
+          console.log('==== РАЗВЕДКА машинных точек 4pda ====');
+          const rob = await probe('https://4pda.to/robots.txt', true);
+          const smUrls = (rob.match(/Sitemap:\s*(\S+)/gi) || []).map(s => s.replace(/Sitemap:\s*/i, '').trim());
+          for (const u of smUrls.slice(0, 4)) await probe(u, false);
+          for (const u of [
+            'https://4pda.to/sitemap.xml',
+            'https://4pda.to/forum/sitemap.xml',
+            'https://4pda.to/forum/index.php?showforum=212&act=rss',
+            'https://4pda.to/forum/index.php?act=rssout&f=212',
+            'https://4pda.to/forum/index.php?act=rss&type=forums&f=212',
+            'https://4pda.to/forum/index.php?showforum=212&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=0',
+          ]) await probe(u, false);
+          console.log('==== конец разведки (основной обход пропущен) ====');
+          try { await browser.close(); } catch {}
+          process.exit(0);
 
           async function open(url) {
             for (let attempt = 0; attempt < 3; attempt++) {
