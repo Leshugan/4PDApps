@@ -119,39 +119,6 @@ jobs:
           } else { console.log('FPDA_COOKIE пуст'); }
           const page = await ctx.newPage();
 
-          // === РАЗВЕДКА: пробуем "машинные" точки 4pda сырым HTTP (без браузера) — где открыто, где заслон ===
-          async function probe(url, full) {
-            try {
-              const resp = await ctx.request.get(url, { headers: { 'User-Agent': UA_OVERRIDE || UA, 'Accept': 'text/html,application/xml,text/xml,application/rss+xml,*/*', 'Referer': 'https://4pda.to/' }, maxRedirects: 6, timeout: 45000, failOnStatusCode: false });
-              let body = ''; try { body = await resp.text(); } catch {}
-              const cf = /один момент|just a moment|_cf_chl|challenge-platform|attention required/i.test(body) ? 'ЗАСЛОН-CF' : 'ОТКРЫТО';
-              const h = [];
-              const it = (body.match(/<item[\s>]/gi) || []).length; if (it) h.push('RSS-item:' + it);
-              const su = (body.match(/<url>/gi) || []).length; if (su) h.push('sitemap-url:' + su);
-              if (/<sitemapindex/i.test(body)) h.push('sitemap-index');
-              const stc = (body.match(/showtopic=\d+/gi) || []).length; if (stc) h.push('showtopic:' + stc);
-              const dt = (body.match(/data-topic=\"?\d+/gi) || []).length; if (dt) h.push('data-topic:' + dt);
-              console.log('PROBE ' + url + ' -> ' + resp.status() + ' ' + (resp.headers()['content-type'] || '') + ' len=' + body.length + ' [' + cf + ']' + (h.length ? ' ' + h.join(' ') : ''));
-              console.log('   ' + body.slice(0, full ? 900 : 260).replace(/\s+/g, ' '));
-              return body;
-            } catch (e) { console.log('PROBE ' + url + ' -> ОШИБКА ' + e.message); return ''; }
-          }
-          console.log('==== РАЗВЕДКА машинных точек 4pda ====');
-          const rob = await probe('https://4pda.to/robots.txt', true);
-          const smUrls = (rob.match(/Sitemap:\s*(\S+)/gi) || []).map(s => s.replace(/Sitemap:\s*/i, '').trim());
-          for (const u of smUrls.slice(0, 4)) await probe(u, false);
-          for (const u of [
-            'https://4pda.to/sitemap.xml',
-            'https://4pda.to/forum/sitemap.xml',
-            'https://4pda.to/forum/index.php?showforum=212&act=rss',
-            'https://4pda.to/forum/index.php?act=rssout&f=212',
-            'https://4pda.to/forum/index.php?act=rss&type=forums&f=212',
-            'https://4pda.to/forum/index.php?showforum=212&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=0',
-          ]) await probe(u, false);
-          console.log('==== конец разведки (основной обход пропущен) ====');
-          try { await browser.close(); } catch {}
-          process.exit(0);
-
           async function open(url) {
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
