@@ -279,6 +279,7 @@ jobs:
           const SEED_SUBS = ['285','315','316','317','318','319','320','321','509','558','634','751','794','811','831','832','1129','1130','1131','1144','1157'];
           for (const s of SEED_SUBS) { if (!DROP_F.has(s) && !queue.find(q => q.id === s)) queue.push({ id: s, name: '(подраздел 212)', depth: 1 }); }
           let processed = 0;
+          let DBG_DONE = false; // отладка: выгрузить реальную страницу робота один раз
           while (queue.length && processed < 120) {
             const { id: fid, name: fname, depth } = queue.shift();
             if (doneForums.has(fid)) continue;
@@ -291,6 +292,23 @@ jobs:
               if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
               const url = `https://4pda.to/forum/index.php?showforum=${fid}&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=${st}`;
               const html = await open(url);
+              if (st === 0 && !DBG_DONE) {
+                DBG_DONE = true;
+                const durl = page.url();
+                const dtitle = await page.title().catch(() => '');
+                const H = html || '';
+                const low = H.toLowerCase();
+                const flags = ['just a moment','attention required','cf-chl','challenge-platform','_cf_chl','act=login','name="password"','type="password"','sign in','войдите','регистраци'].filter(s => low.includes(s));
+                console.log('=== DEBUG раздел ' + fid + ' стр.0 ===');
+                console.log('URL после загрузки: ' + durl);
+                console.log('title: ' + dtitle);
+                console.log('html length: ' + H.length);
+                console.log('счётчики в html: data-topic=' + ((H.match(/data-topic/g) || []).length) + ' topic_title=' + ((H.match(/topic_title/g) || []).length) + ' f-NNN=' + ((H.match(/id="f-\d+/g) || []).length) + ' showforum=' + ((H.match(/showforum/g) || []).length) + ' showtopic=' + ((H.match(/showtopic/g) || []).length));
+                console.log('флаги CF/логин: ' + (flags.join(', ') || 'нет'));
+                console.log('--- первые 1500 символов HTML ---');
+                console.log(H.slice(0, 1500).replace(/\s+/g, ' '));
+                console.log('=== /DEBUG ===');
+              }
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
               // подразделы: 4pda перешёл на SEO-ссылки, id раздела теперь в атрибуте id="f-NNN"
