@@ -282,26 +282,29 @@ jobs:
             doneForums.add(fid);
             if (DROP_F.has(fid)) { console.log(`forum ${fid} пропущен (не из каталогов)`); continue; }
             processed++;
-            let emptyStreak = 0, noNew = 0, lastSig = '';
-            for (let st = 0; st <= 40000; st += 30) {
-              if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
-              const url = `https://4pda.to/forum/index.php?showforum=${fid}&st=${st}`;
+            let emptyStreak = 0, noNew = 0, pageNo = 0;
+            const seenPages = new Set();        // уже загруженные URL страниц
+            const seenSigs = new Set();         // уже виденные наборы тем (4pda игнорирует st и отдаёт ту же страницу)
+            const toVisit = [`https://4pda.to/forum/index.php?showforum=${fid}&st=0`];
+            const pageCap = MODE === 'fast' ? FAST_PAGES : 1400;
+            while (toVisit.length && pageNo < pageCap) {
+              const url = toVisit.shift();
+              if (seenPages.has(url)) continue; seenPages.add(url);
               const html = await open(url);
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
-              // подразделы — рекурсивно на ЛЮБОЙ глубине (пока не кончатся), внутри каталогов пользователя
-              if (st === 0) {
+              // подразделы — рекурсивно на ЛЮБОЙ глубине, внутри каталогов пользователя (только на первой странице раздела)
+              if (pageNo === 0) {
                 const subs = await page.$$eval('a[href*="showforum="]', els => els.map(a => { const m = a.href.match(/showforum=(\d+)/); return m ? m[1] : null; })).catch(() => []);
                 let added = 0;
                 for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
                 if (added) console.log(`  раздел ${fid} (гл.${depth}): +${added} подразделов`);
               }
               const links = await page.$$eval('a[href*="showtopic="]', els => els.map(a => ({ href: a.href, text: (a.textContent || '').trim() }))).catch(() => []);
-              // если страница повторяет предыдущую — пагинация зависла, выходим из раздела
               const ids = links.map(l => (l.href.match(/showtopic=(\d+)/) || [])[1]).filter(Boolean);
-              const sig = ids.slice().sort().join(','); // сравниваем ВЕСЬ набор тем страницы (а не первые 6) — иначе закреплённые темы вверху дают ложное «зависла»
-              if (st > 0 && sig === lastSig) { console.log(`  forum ${fid}: пагинация зависла на стр. ${st / 30}, стоп`); break; }
-              lastSig = sig;
+              const sig = ids.slice().sort().join(',');
+              if (sig && seenSigs.has(sig)) { pageNo++; continue; } // 4pda вернул уже виденную страницу (st игнорируется) — пропускаем, ссылки её не добавляем
+              seenSigs.add(sig);
               let found = 0, any = 0;
               for (const l of links) {
                 const m = l.href.match(/showtopic=(\d+)/); if (!m) continue;
@@ -314,10 +317,14 @@ jobs:
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
               }
+              // настоящие ссылки пагинации этого раздела (какой бы параметр 4pda ни использовал: st / page / /page/N/)
+              const pl = await page.$$eval('a[href]', (els, f) => els.map(a => a.href).filter(h => h && h.indexOf('showforum=' + f) >= 0 && /[?&](st|page)=\d|\/page\/\d/i.test(h)).map(h => h.split('#')[0]), fid).catch(() => []);
+              for (const u of (pl || [])) { if (!seenPages.has(u) && toVisit.indexOf(u) < 0) toVisit.push(u); }
               if (any === 0) { if (++emptyStreak >= 2) break; }
-              else if (found === 0) { if (++noNew >= 5) break; } else noNew = 0;
-              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, total ${Object.keys(map).length}`);
-              if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
+              else if (found === 0) { if (++noNew >= 6) break; } else noNew = 0;
+              if (pageNo % 10 === 0) console.log(`  forum ${fid}: page ${pageNo}, total ${Object.keys(map).length}, в очереди стр.: ${toVisit.length}`);
+              if (pageNo % 150 === 149) saveAndCommit(`forum ${fid} стр.${pageNo}`, map); // сохраняем по ходу
+              pageNo++;
               await page.waitForTimeout(200);
             }
             total = Object.keys(map).length;
