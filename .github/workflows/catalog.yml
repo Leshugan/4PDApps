@@ -100,11 +100,19 @@ jobs:
           const freshSeen = new Set(); // темы, встреченные на свежих страницах этого прогона (всплыли = обновились)
 
           const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-          const browser = await chromium.launch({ headless: true });
+          const browser = await chromium.launch({ headless: true, args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'] });
           const ctx = await browser.newContext({
             userAgent: UA,
             locale: 'ru-RU',
             viewport: { width: 1366, height: 900 },
+            extraHTTPHeaders: { 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7' },
+          });
+          // маскировка автоматизации — чтобы пройти JS-проверку Cloudflare
+          await ctx.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            window.chrome = window.chrome || { runtime: {} };
           });
           // куки залогиненной сессии 4pda из секрета FPDA_COOKIE — иначе вложения (apk) не отдаются
           const RAW_COOKIE = (process.env.FPDA_COOKIE || '').trim();
@@ -120,11 +128,13 @@ jobs:
               try {
                 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
                 // ждём, пока Cloudflare-заставка сама пройдёт (реальный движок её решает)
-                for (let i = 0; i < 20; i++) {
+                const CF = /Just a moment|Attention Required|Проверка браузера|Один момент|Всё в порядке, но|challenge-platform|_cf_chl|cf-chl|cdn-cgi\/challenge/i;
+                for (let i = 0; i < 16; i++) {
                   const t = await page.title().catch(() => '');
                   const html = await page.content().catch(() => '');
-                  if (!/Just a moment|Attention Required|Проверка браузера/i.test(t + html)) return html;
-                  await page.waitForTimeout(1500);
+                  if (!CF.test(t + html)) return html;
+                  await page.waitForTimeout(2500);
+                  await page.waitForLoadState('domcontentloaded').catch(() => {});
                 }
                 return await page.content();
               } catch { await page.waitForTimeout(2000); }
