@@ -105,7 +105,7 @@ jobs:
           let UA_OVERRIDE = '', RAW_COOKIE = RAW_ENV;
           { const s = RAW_ENV.indexOf('|||'); if (s >= 0) { UA_OVERRIDE = RAW_ENV.slice(0, s).trim(); RAW_COOKIE = RAW_ENV.slice(s + 3).trim(); } }
           if (UA_OVERRIDE) console.log('UA из приложения подставлен');
-          const browser = await chromium.launch({ headless: true });
+          const browser = await chromium.launch({ headless: true, proxy: { server: 'socks5://127.0.0.1:40000' } });
           const ctx = await browser.newContext({
             userAgent: UA_OVERRIDE || UA,
             locale: 'ru-RU',
@@ -432,6 +432,27 @@ jobs:
             console.log('запушено');
           } catch (e) { console.log('финальный коммит не прошёл:', e.message); }
           CRAWLER
+
+      - name: Setup Cloudflare WARP (SOCKS-прокси на 127.0.0.1:40000)
+        run: |
+          set +e
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update
+          sudo apt-get install -y cloudflare-warp
+          # запускаем демон WARP
+          sudo systemctl enable --now warp-svc 2>/dev/null || (sudo nohup warp-svc >/tmp/warp-svc.log 2>&1 &)
+          sleep 6
+          # регистрация (синтаксис отличается по версиям CLI — пробуем оба)
+          warp-cli --accept-tos registration new || warp-cli --accept-tos register || true
+          # режим прокси: SOCKS5 на 127.0.0.1:40000
+          warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy || true
+          warp-cli --accept-tos proxy port 40000 || true
+          warp-cli --accept-tos connect || warp-cli --accept-tos enable || true
+          sleep 10
+          warp-cli --accept-tos status || true
+          echo "--- проверка: идём через WARP? (ждём warp=on) ---"
+          curl -s --max-time 20 --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace || echo "trace через WARP-прокси не ответил"
 
       - name: Run crawler
         env:
