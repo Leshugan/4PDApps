@@ -93,6 +93,7 @@ jobs:
             const nm = (a.n || '').trim();
             if (nm.length < 2 || /^[\d#]+$/.test(nm) || JUNK.test(nm)) continue;
             if (a.pkg && (!PKG_OK.test(a.pkg) || a.pkg.length > 60 || /^\d/.test(a.pkg))) { delete a.pkg; cleanedPkg++; } // мусорный пакет — убираем, тема переобработается
+            if (a.v && (!/^[0-9]/.test(String(a.v)) || String(a.v).length > 40)) { delete a.v; a.e = 0; } // испорченная версия (SVG-мусор version=\"1.1\") — чистим и переобрабатываем
             map[a.t] = a;
           }
           if (cleanedPkg) console.log('вычищено мусорных пакетов:', cleanedPkg);
@@ -177,11 +178,10 @@ jobs:
             if (!pkg) { m = html.match(new RegExp("f-droid\\.org/(?:[a-z]{2}/)?packages/" + PK, "i")); if (m) pkg = m[1]; }                        // F-Droid
             if (!pkg) { m = html.match(new RegExp("amazon\\.[a-z.]+/[^\"'<>\\s]*?[?&]p=" + PK, "i")); if (m) pkg = m[1]; }                          // Amazon Appstore
             if (!pkg) { m = html.match(new RegExp("[?&]id=" + PK + "(?:[&\"'<\\s]|$)", "i")); if (m) pkg = m[1]; }                                 // любой store-URL вида ?id=пакет
-            // версия — из текста шапки (регуляркой по HTML)
-            let v = ''; const vm = html.match(/(?:Текущая версия|Версия|Version)\s*[:\uFF1A]?\s*(?:<[^>]*>\s*)*([^<\n\r|]{1,40})/i); if (vm) v = vm[1].replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
-            // краткое описание — для локального поиска в приложении (как у ag4pda)
-            let d = '';
+            // текст шапки без разметки (версию и описание берём ТОЛЬКО из текста — в тегах SVG бывает version="1.1")
             const flat = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/\s+/g, ' ');
+            let v = ''; const vm = flat.match(/(?:Текущая версия|Версия|Version)\s*[:：]?\s*v?\s*([0-9][^\s|,;()]{0,24}(?:\s*(?:build|b)\s*\.?\s*\d+)?)/i); if (vm) v = vm[1].trim();
+            let d = '';
             let dm = flat.match(/Краткое описание\s*:?\s*(.{3,300}?)(?=Описание|Полное описание|Системные требовани|Что нового|Особенности|Требуется|Русский интерфейс|Разработчик|Домашняя страница|Скачать|Google Play|$)/i);
             if (dm) d = dm[1].trim();
             if (!d) { const om = html.match(/<meta[^>]+(?:property|name)=["'](?:og:description|description)["'][^>]+content=["']([^"']{3,300})["']/i) || html.match(/<meta[^>]+content=["']([^"']{3,300})["'][^>]+(?:property|name)=["'](?:og:description|description)["']/i); if (om) d = om[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim(); }
