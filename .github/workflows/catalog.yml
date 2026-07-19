@@ -275,6 +275,9 @@ jobs:
           let total = 0;
           const doneForums = new Set();
           const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0 }));
+          // подстраховка: подразделы раздела 212 — там лежат сами приложения (вытащены из живой страницы). на случай, если авто-определение подразделов не сработает
+          const SEED_SUBS = ['285','315','316','317','318','319','320','321','509','558','634','751','794','811','831','832','1129','1130','1131','1144','1157'];
+          for (const s of SEED_SUBS) { if (!DROP_F.has(s) && !queue.find(q => q.id === s)) queue.push({ id: s, name: '(подраздел 212)', depth: 1 }); }
           let processed = 0;
           while (queue.length && processed < 120) {
             const { id: fid, name: fname, depth } = queue.shift();
@@ -295,7 +298,7 @@ jobs:
                 const subs = await page.$$eval('a[id^="f-"]', els => els.map(a => (a.id.match(/^f-(\d+)/) || [])[1]).filter(Boolean)).catch(() => []);
                 let added = 0;
                 for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
-                if (added) console.log(`  раздел ${fid} (гл.${depth}): +${added} подразделов`);
+                console.log(`  раздел ${fid} (гл.${depth}): подразделов на стр. ${subs.length}, добавлено ${added}`);
               }
               // темы: id теперь в атрибуте data-topic, название — в .topic_title (было showtopic= в href)
               const links = await page.$$eval('[data-topic]', els => els.map(d => { const id = d.getAttribute('data-topic'); const a = d.querySelector('.topic_title a') || d.querySelector('a'); return { id: id, text: a ? (a.textContent || '').trim() : '' }; }).filter(x => x.id)).catch(() => []);
@@ -316,7 +319,7 @@ jobs:
               }
               if (any === 0) { if (++emptyStreak >= 2) break; }
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
-              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, total ${Object.keys(map).length}`);
+              if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
               await page.waitForTimeout(200);
             }
