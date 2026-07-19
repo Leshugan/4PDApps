@@ -150,7 +150,7 @@ jobs:
 
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           async function extractHat(topicId) {
-            const html = await open('https://4pda.to/forum/index.php?showtopic=' + topicId);
+            const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
             if (!html || html.length < 400) return null;
             // ПАКЕТ — по всему HTML (как в приложении): текст «Имя пакета», ссылка Google Play, market
             let pkg = '';
@@ -166,23 +166,9 @@ jobs:
             if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
-            // версия/описание/иконка — из первого поста
-            let v = '', d = '', ic = '';
-            try {
-              const r = await page.evaluate(() => {
-                const post = document.querySelector('.post_body, .postcolor') || document.body;
-                const T = post.innerText || '';
-                let v = ''; let mm = T.match(/(?:Версия|Текущая версия|Version)\s*:?\s*([^\n\r|]{1,40})/i); if (mm) v = mm[1].trim();
-                let d = ''; mm = T.match(/Краткое описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Описание|Полное|Системные|Что нового|Особенности|$)/i); if (mm) d = mm[1];
-                if (!d) { mm = T.match(/Описание\s*:?\s*([\s\S]{3,180}?)(?:\n|Системные|Что нового|Особенности|$)/i); if (mm) d = mm[1]; }
-                if (!d) { const ogd = document.querySelector('meta[property="og:description"], meta[name="description"]'); if (ogd && ogd.content && ogd.content.length > 3) d = ogd.content; }
-                let ic = ''; const og = document.querySelector('meta[property="og:image"]'); if (og) ic = og.content;
-                if (!ic) { const im = post.querySelector('img'); if (im && im.src) ic = im.src; }
-                return { v, d: (d || '').replace(/\s+/g, ' ').trim().slice(0, 160), ic };
-              });
-              v = r.v; d = r.d; ic = r.ic;
-            } catch {}
-            return { pkg, v, d, ic };
+            // версия — из текста шапки (регуляркой по HTML)
+            let v = ''; const vm = html.match(/(?:Текущая версия|Версия|Version)\s*[:\uFF1A]?\s*(?:<[^>]*>\s*)*([^<\n\r|]{1,40})/i); if (vm) v = vm[1].replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
+            return { pkg, v };
           }
 
           let total = 0;
@@ -263,7 +249,7 @@ jobs:
               if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; a.e = EV; } // d/ic не храним — только привязка и версия; описание/иконка тянутся в приложении на лету
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
-              await page.waitForTimeout(120);
+              await new Promise(r => setTimeout(r, 120));
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
             // остались ли необогащённые — для самозапуска следующего прогона (только полный режим)
