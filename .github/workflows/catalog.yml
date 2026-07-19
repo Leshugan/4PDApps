@@ -85,13 +85,17 @@ jobs:
           let prev = { apps: [] };
           try { prev = JSON.parse(fs.readFileSync('catalog.json', 'utf8')); } catch {}
           const map = {};
+          const PKG_OK = /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/; // валидный вид пакета: сегменты через точку, латиница/цифры/подчёркивание
+          let cleanedPkg = 0;
           for (const a of (prev.apps || [])) {
             if (!a || !a.t) continue;
             if (DROP_F.has(String(a.f))) continue;
             const nm = (a.n || '').trim();
             if (nm.length < 2 || /^[\d#]+$/.test(nm) || JUNK.test(nm)) continue;
+            if (a.pkg && (!PKG_OK.test(a.pkg) || a.pkg.length > 60 || /^\d/.test(a.pkg))) { delete a.pkg; cleanedPkg++; } // мусорный пакет — убираем, тема переобработается
             map[a.t] = a;
           }
+          if (cleanedPkg) console.log('вычищено мусорных пакетов:', cleanedPkg);
           console.log('загружено из старого catalog.json после чистки:', Object.keys(map).length);
           const MODE = process.env.MODE === 'fast' ? 'fast' : 'full';
           const FAST_PAGES = 3; // быстрый режим: только первые страницы (свежее)
@@ -235,7 +239,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 6; // подняли: переобработка ради пакета из Play-ссылок (фолбэк) у тем, где пакета ещё нет
+            const EV = 7; // подняли: переобработка через рабочий сырой HTTP (WARP) — добираем пакеты из Play-ссылок у тем, где их не вытащили в браузерную эпоху
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
