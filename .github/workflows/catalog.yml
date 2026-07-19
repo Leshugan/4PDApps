@@ -50,7 +50,7 @@ jobs:
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
           // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
-          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; return o; }); }
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; return o; }); }
           function saveAndCommit(label, mapRef) {
             const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
@@ -179,7 +179,14 @@ jobs:
             if (!pkg) { m = html.match(new RegExp("[?&]id=" + PK + "(?:[&\"'<\\s]|$)", "i")); if (m) pkg = m[1]; }                                 // любой store-URL вида ?id=пакет
             // версия — из текста шапки (регуляркой по HTML)
             let v = ''; const vm = html.match(/(?:Текущая версия|Версия|Version)\s*[:\uFF1A]?\s*(?:<[^>]*>\s*)*([^<\n\r|]{1,40})/i); if (vm) v = vm[1].replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
-            return { pkg, v };
+            // краткое описание — для локального поиска в приложении (как у ag4pda)
+            let d = '';
+            const flat = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/\s+/g, ' ');
+            let dm = flat.match(/Краткое описание\s*:?\s*(.{3,300}?)(?=Описание|Полное описание|Системные требовани|Что нового|Особенности|Требуется|Русский интерфейс|Разработчик|Домашняя страница|Скачать|Google Play|$)/i);
+            if (dm) d = dm[1].trim();
+            if (!d) { const om = html.match(/<meta[^>]+(?:property|name)=["'](?:og:description|description)["'][^>]+content=["']([^"']{3,300})["']/i) || html.match(/<meta[^>]+content=["']([^"']{3,300})["'][^>]+(?:property|name)=["'](?:og:description|description)["']/i); if (om) d = om[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim(); }
+            d = d.replace(/\s+/g, ' ').slice(0, 160);
+            return { pkg, v, d };
           }
 
           let total = 0;
@@ -248,7 +255,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 8; // переобработка: добавлены источники пакета (RuStore/Galaxy/F-Droid/Amazon/любой ?id=)
+            const EV = 9; // переобработка: собираем краткое описание (d) для локального поиска + источники пакета
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
@@ -259,7 +266,7 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; a.e = EV; } // d/ic не храним — только привязка и версия; описание/иконка тянутся в приложении на лету
+              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; } // d нужен локальному поиску (как ag4pda); иконки по-прежнему живьём
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
               await new Promise(r => setTimeout(r, 120));
