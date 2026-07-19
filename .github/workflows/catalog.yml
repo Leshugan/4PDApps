@@ -50,7 +50,7 @@ jobs:
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
           // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
-          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; return o; }); }
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.u) o.u = a.u; return o; }); }
           function saveAndCommit(label, mapRef) {
             const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
@@ -131,6 +131,17 @@ jobs:
               try { return new TextDecoder('windows-1251').decode(buf); } catch { return buf.toString('utf8'); }
             } catch { return ''; }
           }
+          // дата последнего поста из строки темы: "Сегодня"/"Вчера"/абсолютная -> DD.MM.YYYY
+          const fmtDate = (d) => String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+          const resolveDate = (s) => {
+            s = (s || '').trim();
+            const now = new Date();
+            if (/сегодня|today/i.test(s)) return fmtDate(now);
+            if (/вчера|yesterday/i.test(s)) { const d = new Date(now); d.setDate(d.getDate() - 1); return fmtDate(d); }
+            const m = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+            if (m) { let y = +m[3]; if (y < 100) y += 2000; return String(+m[1]).padStart(2, '0') + '.' + String(+m[2]).padStart(2, '0') + '.' + y; }
+            return '';
+          };
 
           async function open(url) {
             for (let attempt = 0; attempt < 3; attempt++) {
@@ -170,6 +181,13 @@ jobs:
             if (!pkg) { m = html.match(/play\.google\.com[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/market(?::|%3A|%3a)[^"'<>\s]*?id(?:=|%3D|%3d)([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
             if (!pkg) { m = html.match(/details%3Fid%3D([a-zA-Z0-9._]+)/i) || html.match(/details\?id=([a-zA-Z0-9._]+)/i); if (m) pkg = m[1]; }
+            // прочие магазины: пакет прямо в URL
+            const PK = "([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+)+)";
+            if (!pkg) { m = html.match(new RegExp("apps\\.rustore\\.ru/(?:app|catalog/app)/" + PK, "i")); if (m) pkg = m[1]; }                 // RuStore
+            if (!pkg) { m = html.match(new RegExp("(?:galaxystore|apps)\\.samsung\\.com/[^\"'<>\\s]*?(?:detail/|appId=)" + PK, "i")); if (m) pkg = m[1]; } // Galaxy Store
+            if (!pkg) { m = html.match(new RegExp("f-droid\\.org/(?:[a-z]{2}/)?packages/" + PK, "i")); if (m) pkg = m[1]; }                        // F-Droid
+            if (!pkg) { m = html.match(new RegExp("amazon\\.[a-z.]+/[^\"'<>\\s]*?[?&]p=" + PK, "i")); if (m) pkg = m[1]; }                          // Amazon Appstore
+            if (!pkg) { m = html.match(new RegExp("[?&]id=" + PK + "(?:[&\"'<\\s]|$)", "i")); if (m) pkg = m[1]; }                                 // любой store-URL вида ?id=пакет
             // версия — из текста шапки (регуляркой по HTML)
             let v = ''; const vm = html.match(/(?:Текущая версия|Версия|Version)\s*[:\uFF1A]?\s*(?:<[^>]*>\s*)*([^<\n\r|]{1,40})/i); if (vm) v = vm[1].replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
             return { pkg, v };
@@ -205,11 +223,14 @@ jobs:
                 for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
                 console.log(`  раздел ${fid} (гл.${depth}): подразделов на стр. ${subs.length}, добавлено ${added}`);
               }
-              // темы: <div data-topic="ID"><div class="topic_title">...<a ...>НАЗВАНИЕ</a>
+              // темы: разбиваем на строки по data-topic, из каждой берём id, название и дату последнего поста
               const links = [];
-              for (const mm of html.matchAll(/data-topic="(\d+)"[^>]*>\s*<div[^>]*class="[^"]*\btopic_title\b[^"]*"[^>]*>[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/g)) {
-                const txt = mm[2].replace(/<[^>]+>/g, '').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
-                links.push({ id: mm[1], text: txt });
+              for (const rp of html.split(/<div data-topic="/).slice(1)) {
+                const idm = rp.match(/^(\d+)"/); if (!idm) continue;
+                const tm = rp.match(/class="[^"]*\btopic_title\b[^"]*"[^>]*>[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/); if (!tm) continue;
+                const txt = tm[1].replace(/<[^>]+>/g, '').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+                const dm = rp.match(/Послед\.:<\/a>\s*<a\b[^>]*>[^<]*<\/a>\s*([^<]+?)<\/div>/);
+                links.push({ id: idm[1], text: txt, u: dm ? resolveDate(dm[1]) : '' });
               }
               const ids = links.map(l => l.id).filter(Boolean);
               const sig = ids.slice().sort().join(',');
@@ -225,6 +246,7 @@ jobs:
                 freshSeen.add(tid);                                   // тема встречена на свежих страницах (могла обновиться)
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
+                if (l.u) map[tid].u = l.u;                            // дата последнего поста (для карточки)
               }
               if (any === 0) { if (++emptyStreak >= 2) break; }
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
@@ -239,7 +261,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 7; // подняли: переобработка через рабочий сырой HTTP (WARP) — добираем пакеты из Play-ссылок у тем, где их не вытащили в браузерную эпоху
+            const EV = 8; // переобработка: добавлены источники пакета (RuStore/Galaxy/F-Droid/Amazon/любой ?id=) + дата в карточке
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
