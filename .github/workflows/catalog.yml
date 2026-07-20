@@ -155,7 +155,7 @@ jobs:
           }
 
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
-          let hatFail = 0, hatFailShown = 0;
+          let hatFail = 0, hatFailShown = 0, hatEmpty = 0, hatEmptyShown = 0;
           async function extractHat(topicId) {
             const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
             if (!html || html.length < 500 || /_cf_chl|challenge-platform|Just a moment|Один момент/i.test(html.slice(0, 3000))) {
@@ -193,6 +193,14 @@ jobs:
             if (dm) d = dm[1].trim();
             if (!d) { const om = html.match(/<meta[^>]+(?:property|name)=["'](?:og:description|description)["'][^>]+content=["']([^"']{3,300})["']/i) || html.match(/<meta[^>]+content=["']([^"']{3,300})["'][^>]+(?:property|name)=["'](?:og:description|description)["']/i); if (om) d = om[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim(); }
             d = d.replace(/\s+/g, ' ').slice(0, 160);
+            if (!pkg && !v && !d) {
+              hatEmpty++;
+              if (hatEmptyShown < 3) {
+                hatEmptyShown++;
+                const tm = html.match(/<title[^>]*>([\s\S]{0,120}?)<\/title>/i);
+                console.log('!! разбор пуст t=' + topicId + ' len=' + html.length + ' title=«' + (tm ? tm[1].replace(/\s+/g, ' ').trim() : '—') + '» маркеры: post_body=' + /post_body|postcolor/i.test(html) + ' dlpost=' + /dl\/post/i.test(html) + ' кириллица=' + /[Оо]писани|[Вв]ерси/.test(html) + ' пример=«' + flat.slice(0, 160) + '»');
+              }
+            }
             return { pkg, v, d };
           }
 
@@ -275,8 +283,9 @@ jobs:
               const h = await extractHat(a.t);
               if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; } // d нужен локальному поиску (как ag4pda); иконки по-прежнему живьём
               en++;
-              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ')'); saveAndCommit('обогащение ' + en, map); }
+              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
             if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
+            if (en >= 300 && hatEmpty > en * 0.9) { console.log('!!! страницы приходят, но разбор пуст у ' + hatEmpty + '/' + en + ' — 4pda отдаёт не тему; прерываю, смотри строки «!! разбор пуст»'); break; }
               await new Promise(r => setTimeout(r, 120));
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
