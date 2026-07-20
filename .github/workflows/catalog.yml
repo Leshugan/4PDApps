@@ -156,6 +156,7 @@ jobs:
 
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           let hatFail = 0, hatFailShown = 0, hatEmpty = 0, hatEmptyShown = 0;
+          let consecEmpty = 0;
           async function extractHat(topicId) {
             const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
             if (!html || html.length < 500 || /_cf_chl|challenge-platform|Just a moment|Один момент/i.test(html.slice(0, 3000))) {
@@ -201,6 +202,7 @@ jobs:
                 console.log('!! разбор пуст t=' + topicId + ' len=' + html.length + ' title=«' + (tm ? tm[1].replace(/\s+/g, ' ').trim() : '—') + '» маркеры: post_body=' + /post_body|postcolor/i.test(html) + ' dlpost=' + /dl\/post/i.test(html) + ' кириллица=' + /[Оо]писани|[Вв]ерси/.test(html) + ' пример=«' + flat.slice(0, 160) + '»');
               }
             }
+            if (!pkg && !v && !d) return { __empty: true }; // пусто — НЕ помечаем тему обработанной (вероятен лимит 4pda)
             return { pkg, v, d };
           }
 
@@ -261,7 +263,7 @@ jobs:
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
               if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
-              await new Promise(r => setTimeout(r, 120));
+              await new Promise(r => setTimeout(r, 350)); // щадящий темп — 4pda режет частые чтения шапок
             }
             total = Object.keys(map).length;
             console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
@@ -281,12 +283,17 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; } // d нужен локальному поиску (как ag4pda); иконки по-прежнему живьём
+              if (h && !h.__empty) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; consecEmpty = 0; } // d нужен локальному поиску (как ag4pda)
+              else if (h && h.__empty) {
+                consecEmpty++;
+                if (consecEmpty === 25) { console.log('!! похоже на лимит 4pda: 25 пустых подряд — пауза 90 секунд'); await new Promise(r => setTimeout(r, 90000)); }
+                if (consecEmpty >= 50) { console.log('!!! лимит 4pda держится (' + consecEmpty + ' пустых подряд) — прерываю прогон; следующий запуск придёт с нового WARP-IP'); break; }
+              }
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
             if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
             if (en >= 300 && hatEmpty > en * 0.9) { console.log('!!! страницы приходят, но разбор пуст у ' + hatEmpty + '/' + en + ' — 4pda отдаёт не тему; прерываю, смотри строки «!! разбор пуст»'); break; }
-              await new Promise(r => setTimeout(r, 120));
+              await new Promise(r => setTimeout(r, 350)); // щадящий темп — 4pda режет частые чтения шапок
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
             // остались ли необогащённые — для самозапуска следующего прогона (только полный режим)
