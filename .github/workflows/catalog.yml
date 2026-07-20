@@ -157,6 +157,29 @@ jobs:
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           let hatFail = 0, hatFailShown = 0, hatEmpty = 0, hatEmptyShown = 0;
           let consecEmpty = 0;
+          let rotates = 0, sinceRotate = 0;
+          function rotateWarp() {
+            // лимит 4pda счётный на IP (~500-550 чтений) — меняем WARP-IP и продолжаем в том же прогоне
+            if (rotates >= 40) { console.log('!! ротаций WARP уже ' + rotates + ' — хватит на этот прогон'); return false; }
+            rotates++; sinceRotate = 0;
+            try {
+              const sh = (c) => { try { execSync(c, { stdio: 'ignore', shell: '/bin/bash', timeout: 60000 }); } catch {} };
+              console.log('>> смена WARP-IP (#' + rotates + ')…');
+              sh('warp-cli --accept-tos disconnect');
+              sh('warp-cli --accept-tos registration delete || warp-cli --accept-tos delete');
+              sh('warp-cli --accept-tos registration new || warp-cli --accept-tos register');
+              sh('warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy');
+              sh('warp-cli --accept-tos proxy port 40000');
+              sh('warp-cli --accept-tos connect || warp-cli --accept-tos enable');
+              execSync('sleep 8', { shell: '/bin/bash' });
+              let tr = '';
+              try { tr = execSync('curl -s --max-time 20 --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace', { shell: '/bin/bash', timeout: 30000 }).toString(); } catch {}
+              const ip = (tr.match(/ip=([^\n]+)/) || [])[1] || '?';
+              const on = /warp=on/.test(tr);
+              console.log('>> WARP после смены: warp=' + (on ? 'on' : 'off') + ' ip=' + ip);
+              return on;
+            } catch (e) { console.log('!! смена WARP-IP не удалась: ' + (e && e.message)); return false; }
+          }
           async function extractHat(topicId) {
             const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
             if (!html || html.length < 500 || /_cf_chl|challenge-platform|Just a moment|Один момент/i.test(html.slice(0, 3000))) {
@@ -263,7 +286,7 @@ jobs:
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
               if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
-              await new Promise(r => setTimeout(r, 350)); // щадящий темп — 4pda режет частые чтения шапок
+              await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
             }
             total = Object.keys(map).length;
             console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
@@ -283,17 +306,17 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h && !h.__empty) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; consecEmpty = 0; } // d нужен локальному поиску (как ag4pda)
+              if (h && !h.__empty) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; consecEmpty = 0; sinceRotate++; if (sinceRotate >= 450) { console.log('>> профилактика лимита: ' + sinceRotate + ' шапок с этого IP'); rotateWarp(); } } // d нужен локальному поиску (как ag4pda)
               else if (h && h.__empty) {
                 consecEmpty++;
-                if (consecEmpty === 25) { console.log('!! похоже на лимит 4pda: 25 пустых подряд — пауза 90 секунд'); await new Promise(r => setTimeout(r, 90000)); }
-                if (consecEmpty >= 50) { console.log('!!! лимит 4pda держится (' + consecEmpty + ' пустых подряд) — прерываю прогон; следующий запуск придёт с нового WARP-IP'); break; }
+                if (consecEmpty === 25) { console.log('!! лимит 4pda: 25 пустых подряд — меняю WARP-IP'); if (rotateWarp()) { consecEmpty = 0; } }
+                if (consecEmpty >= 50) { console.log('!!! лимит держится даже после смены IP (' + consecEmpty + ' пустых) — прерываю прогон'); break; }
               }
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
             if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
             if (en >= 300 && hatEmpty > en * 0.9) { console.log('!!! страницы приходят, но разбор пуст у ' + hatEmpty + '/' + en + ' — 4pda отдаёт не тему; прерываю, смотри строки «!! разбор пуст»'); break; }
-              await new Promise(r => setTimeout(r, 350)); // щадящий темп — 4pda режет частые чтения шапок
+              await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
             // остались ли необогащённые — для самозапуска следующего прогона (только полный режим)
