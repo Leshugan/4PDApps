@@ -94,6 +94,7 @@ jobs:
             if (nm.length < 2 || /^[\d#]+$/.test(nm) || JUNK.test(nm)) continue;
             if (a.pkg && (!PKG_OK.test(a.pkg) || a.pkg.length > 60 || /^\d/.test(a.pkg))) { delete a.pkg; cleanedPkg++; } // мусорный пакет — убираем, тема переобработается
             if (a.v && (!/^[0-9]/.test(String(a.v)) || String(a.v).length > 40)) { delete a.v; a.e = 0; } // испорченная версия (SVG-мусор version=\"1.1\") — чистим и переобрабатываем
+            if (a.e === 9 && !a.d && !a.v && !a.pkg) { a.e = 0; } // помечена «обработанной», но пустая (шапка не читалась) — вернуть в очередь
             map[a.t] = a;
           }
           if (cleanedPkg) console.log('вычищено мусорных пакетов:', cleanedPkg);
@@ -154,8 +155,14 @@ jobs:
           }
 
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
+          let hatFail = 0, hatFailShown = 0;
           async function extractHat(topicId) {
             const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
+            if (!html || html.length < 500 || /_cf_chl|challenge-platform|Just a moment|Один момент/i.test(html.slice(0, 3000))) {
+              hatFail++;
+              if (hatFailShown < 3) { hatFailShown++; console.log('!! шапка не читается t=' + topicId + ' len=' + (html ? html.length : 0) + (html ? ' «' + html.slice(0, 120).replace(/\s+/g, ' ') + '»' : '')); }
+              return null; // НЕ помечаем тему обработанной — перечитается в следующем прогоне
+            }
             if (!html || html.length < 400) return null;
             // ПАКЕТ — по всему HTML (как в приложении): текст «Имя пакета», ссылка Google Play, market
             let pkg = '';
@@ -268,7 +275,8 @@ jobs:
               const h = await extractHat(a.t);
               if (h) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; } // d нужен локальному поиску (как ag4pda); иконки по-прежнему живьём
               en++;
-              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ')'); saveAndCommit('обогащение ' + en, map); }
+              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ')'); saveAndCommit('обогащение ' + en, map); }
+            if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
               await new Promise(r => setTimeout(r, 120));
             }
             console.log('обогащено за прогон: ' + en + ', с пакетом всего: ' + Object.values(map).filter(x => x.pkg).length);
