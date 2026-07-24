@@ -84,6 +84,12 @@ jobs:
           sed -i 's#dependencies {#dependencies {\n    implementation "com.auroraoss:gplayapi:3.5.8"\n    implementation "com.google.code.gson:gson:2.10.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"#' android/app/build.gradle
           # JVM target Kotlin = 17 (как у Java в Capacitor)
           printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
+          # Версия приложения (Capacitor по умолчанию ставит 1.0/1 — переопределяем)
+          APP_VER="1.001"
+          APP_CODE="$(echo "$APP_VER" | tr -d '.')"
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" android/app/build.gradle
+          sed -i "s/versionCode [0-9][0-9]*/versionCode $APP_CODE/" android/app/build.gradle
+          echo "----- версия -----" && grep -E "versionName|versionCode" android/app/build.gradle
           echo "----- deps -----" && grep -E "gplayapi|okhttp|coroutines|kotlin-gradle|kotlin-android" android/build.gradle android/app/build.gradle || true
 
       - name: Generate app icons
