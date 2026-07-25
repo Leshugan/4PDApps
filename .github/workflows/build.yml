@@ -85,7 +85,7 @@ jobs:
           # JVM target Kotlin = 17 (как у Java в Capacitor)
           printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
           # Версия приложения (Capacitor по умолчанию ставит 1.0/1 — переопределяем)
-          APP_VER="1.005"
+          APP_VER="1.006"
           echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
           APP_CODE="$(echo "$APP_VER" | tr -d '.')"
           sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" android/app/build.gradle
@@ -109,25 +109,22 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent" android:layout_height="wrap_content"
-              android:orientation="horizontal" android:gravity="center_vertical"
-              android:paddingStart="2dp" android:paddingEnd="2dp" android:paddingTop="4dp" android:paddingBottom="4dp">
-            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
-                android:layout_weight="1" android:orientation="vertical">
-              <TextView android:id="@+id/t4_title" android:layout_width="match_parent" android:layout_height="wrap_content"
-                  android:textSize="13sp" android:maxLines="1" android:ellipsize="end" android:textColor="#DDDDDD"/>
-              <ProgressBar android:id="@+id/t4_prog" style="?android:attr/progressBarStyleHorizontal"
-                  android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="4dp" android:max="100"/>
-              <TextView android:id="@+id/t4_sub" android:layout_width="match_parent" android:layout_height="wrap_content"
-                  android:textSize="11sp" android:maxLines="1" android:textColor="#9A9A9A" android:layout_marginTop="2dp"/>
-            </LinearLayout>
-            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:orientation="vertical" android:gravity="end" android:layout_marginStart="10dp">
+              android:orientation="vertical"
+              android:paddingStart="2dp" android:paddingEnd="2dp" android:paddingTop="4dp" android:paddingBottom="2dp">
+            <TextView android:id="@+id/t4_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="13sp" android:maxLines="1" android:ellipsize="end" android:textColor="#DDDDDD"/>
+            <ProgressBar android:id="@+id/t4_prog" style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="6dp" android:max="100"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="2dp">
+              <TextView android:id="@+id/t4_sub" android:layout_width="0dp" android:layout_height="wrap_content"
+                  android:layout_weight="1" android:textSize="11sp" android:maxLines="1" android:textColor="#9A9A9A"/>
               <TextView android:id="@+id/t4_b1" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                  android:minHeight="48dp" android:minWidth="64dp" android:gravity="center"
+                  android:minHeight="44dp" android:minWidth="64dp" android:gravity="center"
                   android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
                   android:paddingStart="12dp" android:paddingEnd="12dp"/>
               <TextView android:id="@+id/t4_b2" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                  android:minHeight="48dp" android:minWidth="64dp" android:gravity="center"
+                  android:minHeight="44dp" android:minWidth="64dp" android:gravity="center"
                   android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
                   android:paddingStart="12dp" android:paddingEnd="12dp"/>
             </LinearLayout>
