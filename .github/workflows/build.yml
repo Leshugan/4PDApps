@@ -102,6 +102,38 @@ jobs:
           fi
           npx @capacitor/assets generate --android --assetPath resources
 
+      - name: Разметка уведомления загрузки (кнопки справа)
+        run: |
+          mkdir -p android/app/src/main/res/layout
+          cat > android/app/src/main/res/layout/t4_notif_dl.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent" android:layout_height="wrap_content"
+              android:orientation="horizontal" android:gravity="center_vertical"
+              android:paddingStart="2dp" android:paddingEnd="2dp" android:paddingTop="4dp" android:paddingBottom="4dp">
+            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:orientation="vertical">
+              <TextView android:id="@+id/t4_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                  android:textSize="13sp" android:maxLines="1" android:ellipsize="end" android:textColor="#DDDDDD"/>
+              <ProgressBar android:id="@+id/t4_prog" style="?android:attr/progressBarStyleHorizontal"
+                  android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="4dp" android:max="100"/>
+              <TextView android:id="@+id/t4_sub" android:layout_width="match_parent" android:layout_height="wrap_content"
+                  android:textSize="11sp" android:maxLines="1" android:textColor="#9A9A9A" android:layout_marginTop="2dp"/>
+            </LinearLayout>
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="vertical" android:gravity="end" android:layout_marginStart="10dp">
+              <TextView android:id="@+id/t4_b1" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                  android:textSize="12sp" android:textStyle="bold" android:textColor="#C8892E"
+                  android:paddingStart="10dp" android:paddingEnd="4dp" android:paddingTop="3dp" android:paddingBottom="3dp"/>
+              <TextView android:id="@+id/t4_b2" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                  android:textSize="12sp" android:textStyle="bold" android:textColor="#C8892E"
+                  android:paddingStart="10dp" android:paddingEnd="4dp" android:paddingTop="3dp" android:paddingBottom="3dp"/>
+            </LinearLayout>
+          </LinearLayout>
+          XML
+          sed -i 's/^          //' android/app/src/main/res/layout/t4_notif_dl.xml
+          echo "layout создан"
+
       - name: Add Android permissions
         run: |
           MAN=android/app/src/main/AndroidManifest.xml
