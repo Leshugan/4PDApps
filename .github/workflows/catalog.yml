@@ -50,7 +50,7 @@ jobs:
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
           // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
-          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; if (a.u) o.u = a.u; if (a.a) o.a = a.a; return o; }); }
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; if (a.u) o.u = a.u; if (a.a) o.a = a.a; if (a.m) o.m = a.m; return o; }); }
           function saveAndCommit(label, mapRef) {
             const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
@@ -157,28 +157,32 @@ jobs:
           // извлечь из шапки темы: пакет, версию, краткое описание, иконку
           let hatFail = 0, hatFailShown = 0, hatEmpty = 0, hatEmptyShown = 0;
           let consecEmpty = 0;
-          let rotates = 0, sinceRotate = 0;
+          let rotates = 0, sinceRotate = 0, prevWarpIp = '';
           function rotateWarp() {
             // лимит 4pda счётный на IP (~500-550 чтений) — меняем WARP-IP и продолжаем в том же прогоне
             if (rotates >= 40) { console.log('!! ротаций WARP уже ' + rotates + ' — хватит на этот прогон'); return false; }
             rotates++; sinceRotate = 0;
-            try {
-              const sh = (c) => { try { execSync(c, { stdio: 'ignore', shell: '/bin/bash', timeout: 60000 }); } catch {} };
-              console.log('>> смена WARP-IP (#' + rotates + ')…');
-              sh('warp-cli --accept-tos disconnect');
-              sh('warp-cli --accept-tos registration delete || warp-cli --accept-tos delete');
-              sh('warp-cli --accept-tos registration new || warp-cli --accept-tos register');
-              sh('warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy');
-              sh('warp-cli --accept-tos proxy port 40000');
-              sh('warp-cli --accept-tos connect || warp-cli --accept-tos enable');
-              execSync('sleep 8', { shell: '/bin/bash' });
-              let tr = '';
-              try { tr = execSync('curl -s --max-time 20 --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace', { shell: '/bin/bash', timeout: 30000 }).toString(); } catch {}
-              const ip = (tr.match(/ip=([^\n]+)/) || [])[1] || '?';
-              const on = /warp=on/.test(tr);
-              console.log('>> WARP после смены: warp=' + (on ? 'on' : 'off') + ' ip=' + ip);
-              return on;
-            } catch (e) { console.log('!! смена WARP-IP не удалась: ' + (e && e.message)); return false; }
+            const sh = (c) => { try { execSync(c, { stdio: 'ignore', shell: '/bin/bash', timeout: 60000 }); } catch {} };
+            for (let attempt = 1; attempt <= 3; attempt++) {                      // иногда регистрация выдаёт тот же IP — пробуем до смены
+              try {
+                console.log('>> смена WARP-IP (#' + rotates + (attempt > 1 ? ', попытка ' + attempt : '') + ')…');
+                sh('warp-cli --accept-tos disconnect');
+                sh('warp-cli --accept-tos registration delete || warp-cli --accept-tos delete');
+                sh('warp-cli --accept-tos registration new || warp-cli --accept-tos register');
+                sh('warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy');
+                sh('warp-cli --accept-tos proxy port 40000');
+                sh('warp-cli --accept-tos connect || warp-cli --accept-tos enable');
+                execSync('sleep 8', { shell: '/bin/bash' });
+                let tr = '';
+                try { tr = execSync('curl -s --max-time 20 --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace', { shell: '/bin/bash', timeout: 30000 }).toString(); } catch {}
+                const ip = (tr.match(/ip=([^\n]+)/) || [])[1] || '?';
+                const on = /warp=on/.test(tr);
+                console.log('>> WARP после смены: warp=' + (on ? 'on' : 'off') + ' ip=' + ip);
+                if (on && ip !== '?' && ip !== prevWarpIp) { prevWarpIp = ip; return true; }
+                if (on && attempt === 3) { prevWarpIp = ip; return true; }         // IP тот же, но связь есть — работаем на нём
+              } catch (e) { console.log('!! смена WARP-IP не удалась: ' + (e && e.message)); }
+            }
+            return false;
           }
           async function extractHat(topicId) {
             const html = await fetchHtml('https://4pda.to/forum/index.php?showtopic=' + topicId);
@@ -248,6 +252,7 @@ jobs:
             processed++;
             let emptyStreak = 0, noNew = 0;
             const seenSigs = new Set();
+            const seenNow = new Set(); let fullCrawl = false;      // для детекции удалённых тем
             for (let st = 0; st <= 40000; st += 30) {
               if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
               const url = `https://4pda.to/forum/index.php?showforum=${fid}&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=${st}`;
@@ -272,11 +277,12 @@ jobs:
               }
               const ids = links.map(l => l.id).filter(Boolean);
               const sig = ids.slice().sort().join(',');
-              if (st > 0 && (!ids.length || seenSigs.has(sig))) { console.log(`  forum ${fid}: страницы кончились на стр. ${st / 30}`); break; } // пусто или повтор (4pda мог игнорировать st) — стоп
+              if (st > 0 && (!ids.length || seenSigs.has(sig))) { console.log(`  forum ${fid}: страницы кончились на стр. ${st / 30}`); fullCrawl = true; break; } // пусто или повтор — раздел пройден целиком
               seenSigs.add(sig);
               let found = 0, any = 0;
               for (const l of links) {
                 const tid = l.id; if (!tid) continue;
+                seenNow.add(tid);                                     // тема жива в своём разделе (для детекции удалённых)
                 any++;
                 let name = (l.text || '').replace(/\s+/g, ' ').trim();
                 if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
@@ -285,11 +291,20 @@ jobs:
                 if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
               }
-              if (any === 0) { if (++emptyStreak >= 2) break; }
+              if (any === 0) { if (++emptyStreak >= 2) { fullCrawl = true; break; } }
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
               if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
               await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
+            }
+            if (fullCrawl) {                                        // раздел пройден до конца — темы, не встреченные 3 обхода подряд, считаем удалёнными
+              let dead = 0;
+              for (const tid of Object.keys(map)) {
+                const a = map[tid]; if (String(a.f) !== String(fid)) continue;
+                if (seenNow.has(String(tid))) { if (a.m) delete a.m; }
+                else { a.m = (a.m || 0) + 1; if (a.m >= 3) { delete map[tid]; dead++; } }
+              }
+              if (dead) console.log(`  forum ${fid}: удалено с 4pda (3 обхода подряд не видны): ${dead}`);
             }
             total = Object.keys(map).length;
             console.log(`forum ${fid} (${fname}) done [${processed}/${doneForums.size + queue.length}], total in catalog: ${total}`);
@@ -298,7 +313,7 @@ jobs:
 
           // === Обогащение шапок (пакет/версия/описание/иконка) — партиями за прогон ===
           {
-            const EV = 9; // переобработка: собираем краткое описание (d) для локального поиска + источники пакета
+            const EV = 10; // переобработка: дата правки шапки (u) у всей базы + добор описаний/пакетов
             const CAP = MODE === 'fast' ? 800 : 6000;
             const BUDGET = 1000 * 60 * (MODE === 'fast' ? 8 : 200);
             const t0 = Date.now();
@@ -322,7 +337,7 @@ jobs:
                 if (a.a >= 3) { a.e = EV; console.log('тема t=' + a.t + ' без данных после ' + a.a + ' попыток — помечаю обработанной'); }
               }
               en++;
-              if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
+              if (en % 100 === 0) { const vals = Object.values(map); console.log('обогащено шапок: ' + en + '/' + cand.length + ' (с пакетом: ' + vals.filter(x => x.pkg).length + ', описаний: ' + vals.filter(x => x.d).length + ', дат: ' + vals.filter(x => x.u).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
             if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
             if (en >= 300 && hatEmpty > en * 0.9) { console.log('!!! страницы приходят, но разбор пуст у ' + hatEmpty + '/' + en + ' — 4pda отдаёт не тему; прерываю, смотри строки «!! разбор пуст»'); break; }
               await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
