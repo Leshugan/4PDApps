@@ -123,11 +123,13 @@ jobs:
             <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:orientation="vertical" android:gravity="end" android:layout_marginStart="10dp">
               <TextView android:id="@+id/t4_b1" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                  android:textSize="12sp" android:textStyle="bold" android:textColor="#C8892E"
-                  android:paddingStart="10dp" android:paddingEnd="4dp" android:paddingTop="3dp" android:paddingBottom="3dp"/>
+                  android:minHeight="48dp" android:minWidth="64dp" android:gravity="center"
+                  android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
+                  android:paddingStart="12dp" android:paddingEnd="12dp"/>
               <TextView android:id="@+id/t4_b2" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                  android:textSize="12sp" android:textStyle="bold" android:textColor="#C8892E"
-                  android:paddingStart="10dp" android:paddingEnd="4dp" android:paddingTop="3dp" android:paddingBottom="3dp"/>
+                  android:minHeight="48dp" android:minWidth="64dp" android:gravity="center"
+                  android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
+                  android:paddingStart="12dp" android:paddingEnd="12dp"/>
             </LinearLayout>
           </LinearLayout>
           XML
