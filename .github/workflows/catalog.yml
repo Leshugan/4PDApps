@@ -50,7 +50,7 @@ jobs:
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
           // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
-          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; return o; }); }
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; if (a.u) o.u = a.u; if (a.a) o.a = a.a; return o; }); }
           function saveAndCommit(label, mapRef) {
             const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
@@ -225,8 +225,11 @@ jobs:
                 console.log('!! разбор пуст t=' + topicId + ' len=' + html.length + ' title=«' + (tm ? tm[1].replace(/\s+/g, ' ').trim() : '—') + '» маркеры: post_body=' + /post_body|postcolor/i.test(html) + ' dlpost=' + /dl\/post/i.test(html) + ' кириллица=' + /[Оо]писани|[Вв]ерси/.test(html) + ' пример=«' + flat.slice(0, 160) + '»');
               }
             }
-            if (!pkg && !v && !d) return { __empty: true }; // пусто — НЕ помечаем тему обработанной (вероятен лимит 4pda)
-            return { pkg, v, d };
+            // дата последнего редактирования шапки: «Сообщение отредактировал <ник> - DD.MM.YY, HH:MM»
+            let u = '';
+            { const em = flat.match(/Сообщение отредактировал[^-–—]*[-–—]\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})/); if (em) { let y = +em[3]; if (y < 100) y += 2000; u = String(+em[1]).padStart(2,'0') + '.' + String(+em[2]).padStart(2,'0') + '.' + y; } }
+            if (!pkg && !v && !d && !u) return { __empty: true }; // пусто — НЕ помечаем тему обработанной (вероятен лимит 4pda)
+            return { pkg, v, d, u };
           }
 
           let total = 0;
@@ -306,11 +309,17 @@ jobs:
             for (const a of cand) {
               if (Date.now() - t0 > BUDGET) { console.log('лимит времени обогащения'); break; }
               const h = await extractHat(a.t);
-              if (h && !h.__empty) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; a.e = EV; consecEmpty = 0; sinceRotate++; if (sinceRotate >= 450) { console.log('>> профилактика лимита: ' + sinceRotate + ' шапок с этого IP'); rotateWarp(); } } // d нужен локальному поиску (как ag4pda)
-              else if (h && h.__empty) {
+              if (h && !h.__empty) { if (h.pkg) a.pkg = h.pkg; if (h.v) a.v = h.v; if (h.d) a.d = h.d; if (h.u) a.u = h.u; delete a.a; a.e = EV; consecEmpty = 0; sinceRotate++; if (sinceRotate >= 450) { console.log('>> профилактика лимита: ' + sinceRotate + ' шапок с этого IP'); rotateWarp(); } } // d нужен локальному поиску (как ag4pda)
+              else if (h === null) {
+                // null = Cloudflare/лимит: короткий ответ или челлендж — меняем IP
                 consecEmpty++;
                 if (consecEmpty === 25) { console.log('!! лимит 4pda: 25 пустых подряд — меняю WARP-IP'); if (rotateWarp()) { consecEmpty = 0; } }
                 if (consecEmpty >= 50) { console.log('!!! лимит держится даже после смены IP (' + consecEmpty + ' пустых) — прерываю прогон'); break; }
+              } else if (h && h.__empty) {
+                // __empty = страница прочиталась, но данных нет (мод/старьё/удалённая): считаем попытки, после 3-й выводим из очереди — иначе вечный самозапуск
+                consecEmpty = 0;
+                a.a = (a.a || 0) + 1;
+                if (a.a >= 3) { a.e = EV; console.log('тема t=' + a.t + ' без данных после ' + a.a + ' попыток — помечаю обработанной'); }
               }
               en++;
               if (en % 100 === 0) { console.log('обогащено шапок: ' + en + '/' + cand.length + ' (всего с пакетом: ' + Object.values(map).filter(x => x.pkg).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
