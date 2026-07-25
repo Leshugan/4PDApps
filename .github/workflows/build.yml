@@ -86,6 +86,7 @@ jobs:
           printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
           # Версия приложения (Capacitor по умолчанию ставит 1.0/1 — переопределяем)
           APP_VER="1.005"
+          echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
           APP_CODE="$(echo "$APP_VER" | tr -d '.')"
           sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" android/app/build.gradle
           sed -i "s/versionCode [0-9][0-9]*/versionCode $APP_CODE/" android/app/build.gradle
@@ -146,6 +147,13 @@ jobs:
             -Pandroid.injected.signing.store.password="updatechecker" \
             -Pandroid.injected.signing.key.alias="uc" \
             -Pandroid.injected.signing.key.password="updatechecker"
+
+      - name: Переименовать APK (4PDApps vX.XXX.apk)
+        run: |
+          SRC=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}.apk"
+          if [ -n "$SRC" ] && [ "$SRC" != "$DST" ]; then mv "$SRC" "$DST"; fi
+          ls -la android/app/build/outputs/apk/release/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
