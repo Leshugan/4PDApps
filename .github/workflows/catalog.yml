@@ -1,8 +1,10 @@
 name: Build 4pda catalog
 run-name: >-
-  📚 Каталог 4pda — ${{ github.event.inputs.mode == 'fast' && 'быстрое обновление' || (github.event.schedule == '0 * * * *' && 'быстрое обновление' || 'полный сбор') }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
+  📚 Каталог 4pda — ${{ (github.event.inputs.mode == 'fast' || github.event_name == 'schedule') && 'быстрое обновление' || 'полный сбор' }}${{ github.event_name == 'schedule' && ' (по расписанию)' || (github.event_name == 'workflow_dispatch' && ' (вручную)' || ' (после коммита)') }}
 
 on:
+  schedule:
+    - cron: '0 21 * * *'        # ежедневно в 24:00 по Москве (21:00 UTC); час поправь под свою таймзону
   workflow_dispatch:
     inputs:
       mode:
@@ -50,7 +52,7 @@ jobs:
           // сохраняем catalog.json и коммитим в репозиторий ПО ХОДУ (realtime) — чтобы обрыв не стёр прогресс
           let committing = false;
           // в отдаваемый файл кладём только то, что нужно приложению для связи и поиска: t, n, f, pkg, v (+ e для памяти робота). d/ic не храним — тянутся на лету.
-          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; if (a.u) o.u = a.u; if (a.a) o.a = a.a; if (a.m) o.m = a.m; return o; }); }
+          function slim(mapRef) { return Object.values(mapRef).map(a => { const o = { t: a.t, n: a.n, f: a.f, e: a.e }; if (a.r) o.r = a.r; if (a.pkg) o.pkg = a.pkg; if (a.v) o.v = a.v; if (a.d) o.d = a.d; if (a.a) o.a = a.a; if (a.m) o.m = a.m; return o; }); } // даты (u) больше не пишем: приложение использует только живые
           function saveAndCommit(label, mapRef) {
             const apps = slim(mapRef);
             const out = { updated: new Date().toISOString(), version: Date.now(), count: apps.length, apps };
@@ -98,8 +100,10 @@ jobs:
             map[a.t] = a;
           }
           if (cleanedPkg) console.log('вычищено мусорных пакетов:', cleanedPkg);
+          { let du = 0; for (const a of Object.values(map)) if (a.u !== undefined) { delete a.u; du++; } // даты больше не храним — приложение использует только живые
+            if (du) { console.log('удалены даты (u) из ' + du + ' записей — коммичу очистку сразу'); saveAndCommit('очистка дат (u)', map); } }
           console.log('загружено из старого catalog.json после чистки:', Object.keys(map).length);
-          const MODE = process.env.MODE === 'fast' ? 'fast' : 'full';
+          const MODE = process.env.MODE === 'fast' || process.env.GITHUB_EVENT_NAME === 'schedule' ? 'fast' : 'full'; // по расписанию — всегда быстрый (новые темы); полный — вручную
           const FAST_PAGES = 3; // быстрый режим: только первые страницы (свежее)
           const oldVersion = prev.version || 0;
           const oldMap = {}; for (const t in map) oldMap[t] = { n: map[t].n, f: map[t].f };
@@ -229,23 +233,20 @@ jobs:
                 console.log('!! разбор пуст t=' + topicId + ' len=' + html.length + ' title=«' + (tm ? tm[1].replace(/\s+/g, ' ').trim() : '—') + '» маркеры: post_body=' + /post_body|postcolor/i.test(html) + ' dlpost=' + /dl\/post/i.test(html) + ' кириллица=' + /[Оо]писани|[Вв]ерси/.test(html) + ' пример=«' + flat.slice(0, 160) + '»');
               }
             }
-            // дата последнего редактирования шапки: «Сообщение отредактировал <ник> - DD.MM.YY, HH:MM»
-            let u = '';
-            { const em = flat.match(/Сообщение отредактировал[^-–—]*[-–—]\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})/); if (em) { let y = +em[3]; if (y < 100) y += 2000; u = String(+em[1]).padStart(2,'0') + '.' + String(+em[2]).padStart(2,'0') + '.' + y; } }
-            if (!pkg && !v && !d && !u) return { __empty: true }; // пусто — НЕ помечаем тему обработанной (вероятен лимит 4pda)
-            return { pkg, v, d, u };
+            if (!pkg && !v && !d) return { __empty: true }; // пусто — НЕ помечаем тему обработанной (вероятен лимит 4pda)
+            return { pkg, v, d };
           }
 
           let total = 0;
           const doneForums = new Set();
-          const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0 }));
+          const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0, root: String(id) }));  // root едет с обходом: категория темы = корневой раздел
           // подстраховка: подразделы раздела 212 — там лежат сами приложения (вытащены из живой страницы). на случай, если авто-определение подразделов не сработает
           const SEED_SUBS = ['285','315','316','317','318','319','320','321','509','558','634','751','794','811','831','832','1129','1130','1131','1144','1157'];
-          for (const s of SEED_SUBS) { if (!DROP_F.has(s) && !queue.find(q => q.id === s)) queue.push({ id: s, name: '(подраздел 212)', depth: 1 }); }
+          for (const s of SEED_SUBS) { if (!DROP_F.has(s) && !queue.find(q => q.id === s)) queue.push({ id: s, name: '(подраздел 212)', depth: 1, root: '212' }); }
           let processed = 0;
           let DBG_DONE = false; // отладка: выгрузить реальную страницу робота один раз
           while (queue.length && processed < 120) {
-            const { id: fid, name: fname, depth } = queue.shift();
+            const { id: fid, name: fname, depth, root = fid } = queue.shift();
             if (doneForums.has(fid)) continue;
             doneForums.add(fid);
             if (DROP_F.has(fid)) { console.log(`forum ${fid} пропущен (не из каталогов)`); continue; }
@@ -264,7 +265,7 @@ jobs:
               if (st === 0) {
                 const subs = [...new Set([...html.matchAll(/id="f-(\d+)"/g)].map(m => m[1]))];
                 let added = 0;
-                for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1 }); added++; } }
+                for (const s of subs) { if (doneForums.size + queue.length > 800) break; if (s && !DROP_F.has(s) && !doneForums.has(s) && !queue.find(q => q.id === s)) { queue.push({ id: s, name: '', depth: depth + 1, root: root }); added++; } }
                 console.log(`  раздел ${fid} (гл.${depth}): подразделов на стр. ${subs.length}, добавлено ${added}`);
               }
               // темы: разбиваем на строки по data-topic, из каждой берём id, название и дату последнего поста
@@ -288,7 +289,7 @@ jobs:
                 if (name.length < 2 || /^[\d#]+$/.test(name) || JUNK.test(name)) continue;
                 if (/\[(ios|iphone|ipad|ipados|wp7|wp8|wp10|wp|windows phone|symbian|java|bada|blackberry|bb10?|tizen|kaios|maemo|meego)\]/i.test(name)) continue; // не-Android — не берём
                 freshSeen.add(tid);                                   // тема встречена на свежих страницах (могла обновиться)
-                if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid }; found++; }
+                if (!map[tid]) { map[tid] = { t: tid, n: name, f: fid, r: root }; found++; } else if (map[tid].r !== root) { map[tid].r = root; } // корень дописываем и старым темам
                 else if (map[tid].n !== name) { map[tid].n = name; }  // название изменилось — обновляем
               }
               if (any === 0) { if (++emptyStreak >= 2) { fullCrawl = true; break; } }
@@ -337,7 +338,7 @@ jobs:
                 if (a.a >= 3) { a.e = EV; console.log('тема t=' + a.t + ' без данных после ' + a.a + ' попыток — помечаю обработанной'); }
               }
               en++;
-              if (en % 100 === 0) { const vals = Object.values(map); console.log('обогащено шапок: ' + en + '/' + cand.length + ' (с пакетом: ' + vals.filter(x => x.pkg).length + ', описаний: ' + vals.filter(x => x.d).length + ', дат: ' + vals.filter(x => x.u).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
+              if (en % 100 === 0) { const vals = Object.values(map); console.log('обогащено шапок: ' + en + '/' + cand.length + ' (с пакетом: ' + vals.filter(x => x.pkg).length + ', описаний: ' + vals.filter(x => x.d).length + ', пустых чтений: ' + hatFail + ', пустой разбор: ' + hatEmpty + ')'); saveAndCommit('обогащение ' + en, map); }
             if (hatFail >= 40 && hatFail > en * 0.8) { console.log('!!! шапки массово не читаются (' + hatFail + ' пустых) — прерываю обогащение, чтобы не жечь прогон впустую'); break; }
             if (en >= 300 && hatEmpty > en * 0.9) { console.log('!!! страницы приходят, но разбор пуст у ' + hatEmpty + '/' + en + ' — 4pda отдаёт не тему; прерываю, смотри строки «!! разбор пуст»'); break; }
               await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
@@ -394,7 +395,7 @@ jobs:
 
       - name: Run crawler
         env:
-          MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 * * * *' && 'fast' || 'full') }}
+          MODE: ${{ github.event.inputs.mode || (github.event_name == 'schedule' && 'fast' || 'full') }}
           FPDA_COOKIE: ${{ secrets.FPDA_COOKIE }}
         run: |
           git config user.name  "github-actions[bot]"
