@@ -84,9 +84,18 @@ jobs:
           sed -i 's#dependencies {#dependencies {\n    implementation "com.auroraoss:gplayapi:3.5.8"\n    implementation "com.google.code.gson:gson:2.10.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"#' android/app/build.gradle
           # JVM target Kotlin = 17 (как у Java в Capacitor)
           printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
-          # Версия приложения (Capacitor по умолчанию ставит 1.0/1 — переопределяем)
-          APP_VER="1.009"
+          # Версия приложения берётся ИЗ ПРОЕКТА (version.json в корне zip) — этот workflow больше править не нужно.
+          # Формат version.json: {"version":"1.009","release":true,"changelog":["…"]}
+          # Порядок источников: version.json → package.json → 1.000. release:true = финальная версия как есть;
+          # release:false = тестовая сборка, к имени APK добавляется номер прогона (версия приложения не меняется).
+          APP_VER=""
+          if [ -f version.json ]; then APP_VER="$(node -e 'try{process.stdout.write(String(require("./version.json").version||""))}catch(e){}' 2>/dev/null || true)"; fi
+          if [ -z "$APP_VER" ] && [ -f package.json ]; then APP_VER="$(node -e 'try{process.stdout.write(String(require("./package.json").version||""))}catch(e){}' 2>/dev/null || true)"; fi
+          if [ -z "$APP_VER" ]; then APP_VER="1.000"; echo "ВНИМАНИЕ: версия не найдена в version.json/package.json — беру $APP_VER"; fi
+          IS_REL="$(node -e 'try{process.stdout.write(require("./version.json").release===false?"0":"1")}catch(e){process.stdout.write("1")}' 2>/dev/null || echo 1)"
           echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
+          echo "IS_REL=$IS_REL" >> "$GITHUB_ENV"
+          echo "----- источник версии: version.json -----" && cat version.json 2>/dev/null || true
           APP_CODE="$(echo "$APP_VER" | tr -d '.')"
           sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" android/app/build.gradle
           sed -i "s/versionCode [0-9][0-9]*/versionCode $APP_CODE/" android/app/build.gradle
@@ -182,7 +191,7 @@ jobs:
       - name: Переименовать APK (4PDApps vX.XXX.apk)
         run: |
           SRC=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
-          DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}.apk"
+          if [ "${IS_REL:-1}" = "1" ]; then DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}.apk"; else DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}-test${GITHUB_RUN_NUMBER}.apk"; fi
           if [ -n "$SRC" ] && [ "$SRC" != "$DST" ]; then mv "$SRC" "$DST"; fi
           ls -la android/app/build/outputs/apk/release/
 
