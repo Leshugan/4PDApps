@@ -434,3 +434,37 @@ jobs:
           else
             echo "База обогащена полностью — самозапуск не нужен"
           fi
+
+      - name: Убрать старые прогоны (оставить последний успешный)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          API="https://api.github.com/repos/${{ github.repository }}"
+          H_AUTH="Authorization: Bearer $GH_TOKEN"
+          H_ACC="Accept: application/vnd.github+json"
+          CUR="${{ github.run_id }}"
+
+          # собираем прогоны ЭТОГО воркфлоу (до 500 штук)
+          : > /tmp/runs.txt
+          for p in 1 2 3 4 5; do
+            curl -sf -H "$H_AUTH" -H "$H_ACC" "$API/actions/workflows/catalog.yml/runs?per_page=100&page=$p" \
+              | jq -r '.workflow_runs[] | "\(.id) \(.status) \(.conclusion)"' >> /tmp/runs.txt
+            [ "$(curl -sf -H "$H_AUTH" -H "$H_ACC" "$API/actions/workflows/catalog.yml/runs?per_page=100&page=$p" | jq '.workflow_runs | length')" = "100" ] || break
+          done
+
+          # последний успешный (список приходит от свежих к старым), текущий прогон не в счёт
+          KEEP=$(awk -v cur="$CUR" '$1 != cur && $2 == "completed" && $3 == "success" { print $1; exit }' /tmp/runs.txt)
+          echo "текущий: $CUR | оставляю успешный: ${KEEP:-нет}"
+
+          DEL=0
+          while read -r id status concl; do
+            [ -z "$id" ] && continue
+            [ "$id" = "$CUR" ] && continue          # текущий прогон
+            [ "$id" = "$KEEP" ] && continue         # последний успешный
+            [ "$status" != "completed" ] && continue # запущенные/в очереди удалять нельзя
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$H_AUTH" -H "$H_ACC" "$API/actions/runs/$id")
+            case "$code" in 204) DEL=$((DEL+1));; *) echo "не удалён $id (HTTP $code)";; esac
+          done < /tmp/runs.txt
+          echo "удалено прогонов: $DEL"
