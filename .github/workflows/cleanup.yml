@@ -1,5 +1,5 @@
 name: Уборка старых сборок
-run-name: 🧹 Уборка старых сборок
+run-name: 🧹🧹🧹
 
 on:
   workflow_run:                      # запускается сам, когда сборка завершилась
@@ -26,6 +26,9 @@ jobs:
             echo "Меньше одиннадцати — чистить нечего"
           else
             KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
+            FAILS=$(gh run list --repo "$REPO" --workflow "$WF" --status failure --limit 200 --json databaseId --jq '.[].databaseId')
+            KEEP_FAIL=$(printf '%s\n' "$FAILS" | head -n 1)      # самую свежую неудачную всегда оставляем
+            KEEP=$(printf '%s\n%s\n' "$KEEP" "$KEEP_FAIL")
             gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
               [ "$id" = "$GITHUB_RUN_ID" ] && continue
               if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
