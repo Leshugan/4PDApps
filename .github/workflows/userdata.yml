@@ -48,7 +48,7 @@ jobs:
             const t = String(r.topicId || "0");
             db.files[t] = db.files[t] || [];
             if (!db.files[t].some((x) => x.aid === r.aid)) {
-              db.files[t].push({ aid: r.aid, url: r.url, name: r.name, pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, abis: r.abis, size: r.size });
+              db.files[t].push({ aid: r.aid, url: r.url, name: r.name, app: r.app_name || "", pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, targetSdk: r.targetSdk || 0, abis: r.abis, size: r.size, crc: String(r.crc32 || "") });
               added++;
             }
           }
