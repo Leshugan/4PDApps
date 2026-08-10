@@ -5,7 +5,7 @@ on:
     inputs:
       per_run:
         description: "Сколько тем обойти за один заход"
-        default: "4000"
+        default: "1200"
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -168,11 +168,21 @@ jobs:
           console.log(`готово: тем с данными ${ok}, пустых ${empty}; всего пакетов в базе ${Object.keys(db.apps).length}, тем ${Object.keys(db.files).length}`);
 
           ENDOFSCRIPT
+      - name: Создать файл базы сразу
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          if [ ! -f ag4pda_fucker.json ]; then
+            echo '{"v":1,"apps":{},"files":{},"cursor":0}' > ag4pda_fucker.json
+            git add ag4pda_fucker.json
+            git commit -m "ag4pda_fucker: файл создан"
+            for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
+          fi
       - name: Собрать сведения с сервера App&Game
         continue-on-error: true
         env:
-          PER_RUN: ${{ github.event.inputs.per_run || '4000' }}
-          MAX_MIN: "300"
+          PER_RUN: ${{ github.event.inputs.per_run || '1200' }}
+          MAX_MIN: "45"
           AG_DEVICE_ID: ${{ secrets.AG_DEVICE_ID || 't4pdapps-robot-0001' }}
         run: node scripts/ag4pda-fetch.mjs
       - name: Сохранить в репозиторий
@@ -198,7 +208,7 @@ jobs:
           if [ "$DONE" = "1" ]; then
             echo "База собрана целиком — повтор не нужен"
           else
-            gh workflow run "Долбёжка AG4pda" -f per_run=${{ github.event.inputs.per_run || '4000' }} || true
+            gh workflow run "Долбёжка AG4pda" -f per_run=${{ github.event.inputs.per_run || '1200' }} || true
           fi
       - name: Почистить историю запусков
         if: always()
