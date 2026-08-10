@@ -1,12 +1,10 @@
 name: ag4pda base
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"      # каждые 30 минут, пока база не соберётся целиком
   workflow_dispatch:
     inputs:
       per_run:
-        description: "Сколько тем обойти за запуск"
+        description: "Сколько тем обойти за один заход"
         default: "4000"
 
 permissions:
@@ -20,6 +18,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -68,9 +67,33 @@ jobs:
 
           // список тем: из каталога, по кругу — за каждый запуск обрабатываем следующий кусок
           let topics = [];
-          if (cat && Array.isArray(cat.items)) topics = cat.items.map((x) => String(x.t || x.topicId || "")).filter(Boolean);
-          else if (cat && typeof cat === "object") topics = Object.keys(cat).filter((k) => /^\d{3,9}$/.test(k));
-          if (!topics.length) { console.log("нет списка тем (catalog.json) — нечего обходить"); process.exit(0); }
+          function extractTopics(obj) {
+            const out = new Set();
+            const walk = (v) => {
+              if (!v) return;
+              if (Array.isArray(v)) { v.forEach(walk); return; }
+              if (typeof v === "object") {
+                for (const k in v) {
+                  if (/^\d{4,9}$/.test(k)) out.add(k);
+                  const x = v[k];
+                  if ((k === "t" || k === "topicId" || k === "topic_id" || k === "id") && /^\d{4,9}$/.test(String(x))) out.add(String(x));
+                  walk(x);
+                }
+                return;
+              }
+              if (typeof v === "string" && /^\d{4,9}$/.test(v)) out.add(v);
+            };
+            walk(obj);
+            return [...out];
+          }
+          if (cat) topics = extractTopics(cat);
+          if (!topics.length) {                                   // каталога рядом нет — качаем его с GitHub
+            try {
+              const r = await fetch("https://raw.githubusercontent.com/Leshugan/4PDApps/main/catalog.json");
+              if (r.ok) topics = extractTopics(JSON.parse(await r.text()));
+            } catch {}
+          }
+          if (!topics.length) { console.log("список тем не найден: положи catalog.json в корень или проверь ссылку"); process.exit(0); }
 
           const start = (db.cursor || 0) % topics.length;
           const slice = [];
@@ -131,6 +154,7 @@ jobs:
           else db.roundStart = db.roundStart || 0;
           db.updated = new Date().toISOString();
           fs.writeFileSync(OUT, JSON.stringify(db));
+          console.log("файл записан:", OUT);
           console.log(`готово: тем с данными ${ok}, пустых ${empty}; всего пакетов в базе ${Object.keys(db.apps).length}, тем ${Object.keys(db.files).length}`);
 
           ENDOFSCRIPT
@@ -143,48 +167,33 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git pull --rebase --autostash || true
+          test -f ag4pda_fucker.json || echo '{}' > ag4pda_fucker.json
           git add ag4pda_fucker.json
           git diff --cached --quiet || git commit -m "ag4pda_fucker: обновление базы"
+          git pull --rebase --autostash || true
           git push
-      - name: Продолжить сразу, пока база не собрана целиком
+      - name: Продолжить, пока база не соберётся целиком
+        if: success()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DONE=$(node -e "try{const d=require('./ag4pda_fucker.json');console.log(d.done?1:0)}catch(e){console.log(0)}")
-          if [ "$DONE" != "1" ]; then
-            gh workflow run "ag4pda base" --ref "${{ github.ref_name }}" || true
-            echo "запускаю следующий круг"
+          DONE=$(node -e "const d=require('./ag4pda_fucker.json');console.log(d.done?1:0)" 2>/dev/null || echo 0)
+          if [ "$DONE" = "1" ]; then
+            echo "База собрана полностью — повтор не нужен"
           else
-            echo "база собрана целиком"
+            echo "Запускаю следующий заход"
+            gh workflow run "ag4pda base" -f per_run=${{ github.event.inputs.per_run || '4000' }} || true
           fi
       - name: Почистить историю запусков
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # оставляем один последний успешный и один последний неуспешный запуск
-          for STATUS in success failure; do
-            gh run list --workflow "ag4pda base" --status $STATUS --limit 200 --json databaseId \
-              --jq '.[1:] | .[].databaseId' | while read -r ID; do
-                [ -n "$ID" ] && gh run delete "$ID" || true
-              done
-          done
-          for STATUS in cancelled skipped startup_failure timed_out; do
-            gh run list --workflow "ag4pda base" --status $STATUS --limit 200 --json databaseId \
-              --jq '.[].databaseId' | while read -r ID; do
-                [ -n "$ID" ] && gh run delete "$ID" || true
-              done
-          done
-      - name: Убрать старые запуски
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          keep_ok=$(gh run list --workflow "ag4pda base" --status success --limit 1 --json databaseId -q '.[0].databaseId')
-          keep_bad=$(gh run list --workflow "ag4pda base" --status failure --limit 1 --json databaseId -q '.[0].databaseId')
-          for id in $(gh run list --workflow "ag4pda base" --limit 100 --json databaseId -q '.[].databaseId'); do
-            if [ "$id" != "$keep_ok" ] && [ "$id" != "$keep_bad" ] && [ "$id" != "${{ github.run_id }}" ]; then
-              gh run delete "$id" || true
+          KEEP_OK=$(gh run list --workflow "ag4pda base" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          KEEP_BAD=$(gh run list --workflow "ag4pda base" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')
+          gh run list --workflow "ag4pda base" --limit 200 --json databaseId --jq '.[].databaseId' | while read -r ID; do
+            if [ -n "$ID" ] && [ "$ID" != "$KEEP_OK" ] && [ "$ID" != "$KEEP_BAD" ] && [ "$ID" != "${{ github.run_id }}" ]; then
+              gh run delete "$ID" >/dev/null 2>&1 || true
             fi
           done
