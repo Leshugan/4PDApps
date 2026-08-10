@@ -1,4 +1,5 @@
 name: 🧹 Уборка старых сборок
+run-name: Уборка старых сборок
 
 on:
   workflow_run:                      # запускается сам, когда сборка завершилась
@@ -13,7 +14,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Чистить, только если сборок больше 10
+      - name: Чистить сборки, только если их больше 10
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -23,12 +24,27 @@ jobs:
           echo "Всего запусков сборки: $TOTAL"
           if [ "$TOTAL" -le 10 ]; then
             echo "Меньше одиннадцати — чистить нечего"
-            exit 0
+          else
+            KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
+            gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
+              [ "$id" = "$GITHUB_RUN_ID" ] && continue
+              if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
+                gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
+              fi
+            done
           fi
-          KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
-          gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
+
+      - name: Убрать за собой — все прошлые уборки и этот запуск
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          SELF=cleanup.yml
+          gh run list --repo "$REPO" --workflow "$SELF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
             [ "$id" = "$GITHUB_RUN_ID" ] && continue
-            if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
-              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
-            fi
+            gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён прошлый запуск уборки $id" || true
           done
+          # себя удаляем последним: запись пропадёт из списка сразу после завершения шага
+          ( sleep 25; gh api -X DELETE "repos/$REPO/actions/runs/$GITHUB_RUN_ID" >/dev/null 2>&1 || true ) &
+          echo "запись об этой уборке будет удалена через полминуты"
