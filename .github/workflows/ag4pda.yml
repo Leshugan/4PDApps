@@ -18,7 +18,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,6 +46,8 @@ jobs:
           const hash = crypto.createHash("md5").update(rawId).digest("hex");
           const auth = `key=${encodeURIComponent(key)}&hash=${hash}&app_ver=${encodeURIComponent(APP_VER)}`;
 
+          process.on("uncaughtException", (e) => { console.log("сбой:", e && e.message); try { save("после сбоя"); } catch {} process.exit(0); });
+          process.on("unhandledRejection", (e) => { console.log("сбой запроса:", e && e.message); });
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
           async function ask(method, extraQuery) {
@@ -63,6 +65,11 @@ jobs:
           function load(file, def) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return def; } }
 
           const db = load(OUT, { v: 1, updated: "", cursor: 0, apps: {}, files: {} });
+          const MAX_MIN = +(process.env.MAX_MIN || 300);            // работаем не дольше пяти часов, потом сохраняемся
+          const t0 = Date.now();
+          const overtime = () => (Date.now() - t0) / 60000 > MAX_MIN;
+          const save = (why) => { try { db.updated = new Date().toISOString(); fs.writeFileSync(OUT, JSON.stringify(db)); console.log(`сохранено (${why}): тем ${Object.keys(db.files).length}, пакетов ${Object.keys(db.apps).length}`); } catch (e) { console.log("не удалось сохранить:", e.message); } };
+          save("старт");                                             // файл существует с первой секунды
           const cat = load(CAT, null);
 
           // список тем: из каталога, по кругу — за каждый запуск обрабатываем следующий кусок
@@ -120,6 +127,8 @@ jobs:
               }
             }
             ok++;
+            if (ok % 100 === 0) save("по ходу");
+            if (overtime()) { console.log("время вышло — сохраняюсь и выхожу"); break; }
             await sleep(PAUSE);
           }
 
@@ -143,6 +152,8 @@ jobs:
                 upd: String(x.forum_update || ""),
               };
             }
+            save("карточки");
+            if (overtime()) break;
             await sleep(PAUSE);
           }
 
@@ -153,35 +164,40 @@ jobs:
           if (db.done) { db.roundStart = 0; db.finishedAt = new Date().toISOString(); }
           else db.roundStart = db.roundStart || 0;
           db.updated = new Date().toISOString();
-          fs.writeFileSync(OUT, JSON.stringify(db));
-          console.log("файл записан:", OUT);
+          save("итог");
           console.log(`готово: тем с данными ${ok}, пустых ${empty}; всего пакетов в базе ${Object.keys(db.apps).length}, тем ${Object.keys(db.files).length}`);
 
           ENDOFSCRIPT
       - name: Собрать сведения с сервера App&Game
+        continue-on-error: true
         env:
           PER_RUN: ${{ github.event.inputs.per_run || '4000' }}
+          MAX_MIN: "300"
           AG_DEVICE_ID: ${{ secrets.AG_DEVICE_ID || 't4pdapps-robot-0001' }}
         run: node scripts/ag4pda-fetch.mjs
       - name: Сохранить в репозиторий
+        if: always()
+        continue-on-error: true
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          test -f ag4pda_fucker.json || echo '{}' > ag4pda_fucker.json
+          test -f ag4pda_fucker.json || echo '{"v":1,"apps":{},"files":{}}' > ag4pda_fucker.json
           git add ag4pda_fucker.json
           git diff --cached --quiet || git commit -m "ag4pda_fucker: обновление базы"
-          git pull --rebase --autostash || true
-          git push
-      - name: Продолжить, пока база не соберётся целиком
-        if: success()
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && break
+            sleep 5
+          done
+      - name: Следующий заход, пока база не собрана
+        if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DONE=$(node -e "const d=require('./ag4pda_fucker.json');console.log(d.done?1:0)" 2>/dev/null || echo 0)
+          DONE=$(node -e "try{const d=require('./ag4pda_fucker.json');console.log(d.done?1:0)}catch(e){console.log(0)}")
           if [ "$DONE" = "1" ]; then
-            echo "База собрана полностью — повтор не нужен"
+            echo "База собрана целиком — повтор не нужен"
           else
-            echo "Запускаю следующий заход"
             gh workflow run "Долбёжка AG4pda" -f per_run=${{ github.event.inputs.per_run || '4000' }} || true
           fi
       - name: Почистить историю запусков
