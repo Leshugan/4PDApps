@@ -237,6 +237,78 @@ jobs:
             return { pkg, v, d };
           }
 
+          // ── УСКОРЕНИЕ: списки тем берём по протоколу официального клиента 4pda (app.4pda.to:993).
+          // Один сжатый ответ вместо страницы форума: без браузера, прокси, куки и счётчика сайта.
+          const NET = await import('net'); const ZL = await import('zlib');
+          const PROTO = { sock: null, buf: Buffer.alloc(0), waiting: new Map(), num: 1000 + Math.floor(Math.random() * 90000), ok: false, bad: 0 };
+          function pFrame(text) {
+            const raw = Buffer.from(text, 'binary');
+            const packed = ZL.deflateRawSync(raw, { level: 6 });
+            const lf = packed.length + 4; const h = [0xc1];
+            if (lf <= 0x7d) h.push(lf); else if (lf <= 0xffff) h.push(0x7e, (lf >> 8) & 0xff, lf & 0xff);
+            else h.push(0x7f, 0, 0, 0, 0, (lf >>> 24) & 0xff, (lf >> 16) & 0xff, (lf >> 8) & 0xff, lf & 0xff);
+            const o = Buffer.alloc(4); o.writeUInt32LE(raw.length, 0);
+            return Buffer.concat([Buffer.from(h), o, packed]);
+          }
+          function pParse() {
+            let i = 0; const b = PROTO.buf;
+            while (i + 2 <= b.length) {
+              const b0 = b[i]; let ln = b[i + 1] & 0x7f; let p = i + 2;
+              if (ln === 126) { if (p + 2 > b.length) break; ln = b.readUInt16BE(p); p += 2; }
+              else if (ln === 127) { if (p + 8 > b.length) break; ln = Number(b.readBigUInt64BE(p)); p += 8; }
+              if (p + ln > b.length) break;
+              const pay = b.subarray(p, p + ln); i = p + ln;
+              let text = '';
+              try { text = (b0 & 0x40) && ln > 4 ? ZL.inflateRawSync(pay.subarray(4)).toString('binary') : pay.toString('binary'); } catch {}
+              const c = text.indexOf(','); const num = text.startsWith('[') && c > 1 ? text.slice(1, c).trim() : '';
+              const w = PROTO.waiting.get(num); if (w) { PROTO.waiting.delete(num); w(text); }
+            }
+            PROTO.buf = b.subarray(i);
+          }
+          function pConnect() {
+            return new Promise((res) => {
+              try {
+                PROTO.sock = NET.connect({ host: 'app.4pda.to', port: 993 }, () => res(true));
+                PROTO.sock.on('data', (d) => { PROTO.buf = Buffer.concat([PROTO.buf, d]); pParse(); });
+                PROTO.sock.on('error', () => res(false));
+                PROTO.sock.setTimeout(60000, () => { try { PROTO.sock.destroy(); } catch {} PROTO.ok = false; });
+              } catch { res(false); }
+            });
+          }
+          function pAsk(payload, ms = 15000) {
+            const n = PROTO.num++;
+            return new Promise((res) => {
+              const t = setTimeout(() => { PROTO.waiting.delete(String(n)); res(''); }, ms);
+              PROTO.waiting.set(String(n), (txt) => { clearTimeout(t); res(txt); });
+              try { PROTO.sock.write(pFrame('[' + n + ',' + payload + ']')); } catch { clearTimeout(t); res(''); }
+            });
+          }
+          async function pInit() {
+            if (PROTO.ok) return true;
+            if (PROTO.bad >= 3) return false;
+            const c = await pConnect();
+            if (!c) { PROTO.bad++; return false; }
+            await pAsk('"ah","1.9.43","","",0,0', 8000);
+            PROTO.ok = true; console.log('протокол 4pda: подключено');
+            return true;
+          }
+          async function protoForumHtml(fid, st) {
+            if (!(await pInit())) return null;
+            const txt = await pAsk('"fs",' + fid + ',' + st + ',30');
+            if (!txt) { PROTO.ok = false; PROTO.bad++; return null; }
+            const re = /\[(\d),(\d{3,9}),"((?:[^"\\]|\\.)*)"/g;
+            let m, out = '', n = 0;
+            while ((m = re.exec(txt))) {
+              const id = m[2];
+              const title = Buffer.from(m[3], 'binary').toString('latin1')
+                .replace(/\\u000[23]/g, '').replace(/\[\/?[a-z=#0-9]+\]/gi, '').replace(/"/g, '&quot;').trim();
+              if (!title || title.length < 2) continue;
+              out += '<div data-topic="' + id + '"><span class="topic_title"><a href="#">' + title + '</a></span></div>';
+              n++;
+            }
+            return n ? out : '';
+          }
+
           let total = 0;
           const doneForums = new Set();
           const queue = FORUMS.map(([id, name]) => ({ id: String(id), name, depth: 0, root: String(id) }));  // root едет с обходом: категория темы = корневой раздел
@@ -257,7 +329,9 @@ jobs:
             for (let st = 0; st <= 40000; st += 30) {
               if (MODE === 'fast' && st / 30 >= FAST_PAGES) break; // быстрый режим — только свежие страницы
               const url = `https://4pda.to/forum/index.php?showforum=${fid}&sort_key=last_post&sort_by=Z-A&prune_day=1000&topicfilter=all&st=${st}`;
-              const html = await fetchHtml(url);
+              let html = await protoForumHtml(fid, st);      // быстрый путь: сервер приложения
+              if (html === null) html = await fetchHtml(url); // протокол недоступен — как раньше
+              else if (html === '') { console.log('  forum ' + fid + ': протокол — тем больше нет (стр. ' + (st / 30) + ')'); fullCrawl = true; break; }
               if (st === 0 && !DBG_DONE) { DBG_DONE = true; console.log('  раздел ' + fid + ' стр.0: html ' + (html || '').length + ' симв, data-topic=' + (((html || '').match(/data-topic/g) || []).length) + ', f-NNN=' + (((html || '').match(/id="f-\d+/g) || []).length)); }
               if (!html) { if (++emptyStreak >= 3) break; else continue; }
               emptyStreak = 0;
@@ -296,7 +370,7 @@ jobs:
               else if (found === 0) { if (++noNew >= 8) break; } else noNew = 0;
               if ((st / 30) % 10 === 0) console.log(`  forum ${fid}: page ${st / 30}, тем на стр. ${any} (новых ${found}), total ${Object.keys(map).length}`);
               if ((st / 30) % 150 === 149) saveAndCommit(`forum ${fid} стр.${st / 30}`, map); // сохраняем по ходу
-              await new Promise(r => setTimeout(r, 250)); // лимит 4pda счётный (~500 на IP) — темп умеренный, IP ротируем
+              await new Promise(r => setTimeout(r, PROTO.ok ? 40 : 250)); // по протоколу лимитов нет — идём быстро
             }
             if (fullCrawl) {                                        // раздел пройден до конца — темы, не встреченные 3 обхода подряд, считаем удалёнными
               let dead = 0;
