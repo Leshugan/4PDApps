@@ -1,4 +1,4 @@
-name: ag4pda base
+name: Долбёжка AG4pda
 
 on:
   workflow_dispatch:
@@ -182,7 +182,7 @@ jobs:
             echo "База собрана полностью — повтор не нужен"
           else
             echo "Запускаю следующий заход"
-            gh workflow run "ag4pda base" -f per_run=${{ github.event.inputs.per_run || '4000' }} || true
+            gh workflow run "Долбёжка AG4pda" -f per_run=${{ github.event.inputs.per_run || '4000' }} || true
           fi
       - name: Почистить историю запусков
         if: always()
@@ -190,9 +190,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          KEEP_OK=$(gh run list --workflow "ag4pda base" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          KEEP_BAD=$(gh run list --workflow "ag4pda base" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')
-          gh run list --workflow "ag4pda base" --limit 200 --json databaseId --jq '.[].databaseId' | while read -r ID; do
+          KEEP_OK=$(gh run list --workflow "Долбёжка AG4pda" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          KEEP_BAD=$(gh run list --workflow "Долбёжка AG4pda" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')
+          gh run list --workflow "Долбёжка AG4pda" --limit 200 --json databaseId --jq '.[].databaseId' | while read -r ID; do
             if [ -n "$ID" ] && [ "$ID" != "$KEEP_OK" ] && [ "$ID" != "$KEEP_BAD" ] && [ "$ID" != "${{ github.run_id }}" ]; then
               gh run delete "$ID" >/dev/null 2>&1 || true
             fi
