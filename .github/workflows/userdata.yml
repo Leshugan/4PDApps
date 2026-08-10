@@ -11,6 +11,7 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write        # без этого нельзя удалять свои запуски
 
 concurrency:
   group: userdata
