@@ -47,10 +47,16 @@ jobs:
             if (!/^[0-9A-Fa-f]{32,64}$/.test(String(r.sig))) continue;
             const t = String(r.topicId || "0");
             db.files[t] = db.files[t] || [];
-            if (!db.files[t].some((x) => x.aid === r.aid)) {
-              db.files[t].push({ aid: r.aid, url: r.url, name: r.name, app: r.app_name || "", pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, targetSdk: r.targetSdk || 0, abis: r.abis, size: r.size, crc: String(r.crc32 || "") });
+            const rec = { aid: r.aid, url: r.url, name: r.name, app: r.app_name || "", pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, targetSdk: r.targetSdk || 0, abis: r.abis, size: r.size, crc: String(r.crc32 || "") };
+            const idx = db.files[t].findIndex((x) => x.aid === r.aid);
+            if (idx < 0) { db.files[t].push(rec); added++; }
+            else {                                                        // запись есть — дополняем недостающим
+              const old = db.files[t][idx];
+              for (const k in rec) if ((old[k] === undefined || old[k] === "" || old[k] === 0) && rec[k]) old[k] = rec[k];
               added++;
             }
+            // запись могла раньше лечь без номера темы — убираем такой дубль
+            if (t !== "0" && db.files["0"]) db.files["0"] = db.files["0"].filter((x) => x.aid !== r.aid);
           }
           db.updated = new Date().toISOString();
           fs.writeFileSync("ag4pda_users.json", JSON.stringify(db));
