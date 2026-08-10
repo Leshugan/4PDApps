@@ -18,6 +18,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Распаковать архив проекта
+        run: |
+          if [ ! -f Project_4PDApps.zip ]; then echo "нет Project_4PDApps.zip в корне"; exit 1; fi
+          unzip -o -q Project_4PDApps.zip -d _extracted
+          if [ -d _extracted/Project_4PDApps ]; then SRC=_extracted/Project_4PDApps; else SRC=_extracted; fi
+          mkdir -p scripts
+          cp -f "$SRC"/scripts/*.mjs scripts/ 2>/dev/null || true
+          ls -la scripts/ | head -5
       - name: Забрать каталог и файлы, отправить в приёмник
         env:
           AG_DEVICE_ID: ${{ secrets.AG_DEVICE_ID }}
