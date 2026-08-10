@@ -81,3 +81,19 @@ jobs:
           git add ag4pda_users.json
           git diff --cached --quiet || git commit -m "данные от пользователей"
           for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
+
+      - name: Почистить свои прошлые запуски
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # ищем по ИМЕНИ ФАЙЛА процесса — так надёжнее, чем по названию
+          for ST in success failure cancelled skipped timed_out startup_failure; do
+            gh run list --repo "$REPO" --workflow userdata.yml --status "$ST" --limit 200 --json databaseId,status --jq '.[] | select(.status=="completed") | .databaseId' | while read -r id; do
+              [ -z "$id" ] && continue
+              [ "$id" = "$GITHUB_RUN_ID" ] && continue
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён запуск $id" || echo "не удалось удалить $id"
+            done
+          done
