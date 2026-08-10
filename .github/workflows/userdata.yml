@@ -69,7 +69,16 @@ jobs:
           git diff --cached --quiet || git commit -m "данные от пользователей"
           for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
           while read -r n; do
-            [ -n "$n" ] && gh issue delete "$n" --repo "$REPO" --yes >/dev/null 2>&1 || gh issue close "$n" --repo "$REPO" >/dev/null 2>&1 || true
+            [ -z "$n" ] && continue
+            # сперва пробуем удалить насовсем, если прав не хватит — закрываем
+            NODE=$(gh api "repos/$REPO/issues/$n" --jq '.node_id' 2>/dev/null || true)
+            DELETED=0
+            if [ -n "$NODE" ]; then
+              gh api graphql -f query='mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}' -f id="$NODE" >/dev/null 2>&1 && DELETED=1 || true
+            fi
+            if [ "$DELETED" = "1" ]; then echo "удалена запись $n"; else
+              gh api -X PATCH "repos/$REPO/issues/$n" -f state=closed >/dev/null 2>&1 && echo "закрыта запись $n" || echo "не удалось обработать $n"
+            fi
           done < /tmp/done.txt
 
       - name: Почистить свои запуски (оставить 2 последних успешных)
