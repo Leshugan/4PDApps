@@ -31,6 +31,14 @@ jobs:
           AG_DEVICE_ID: ${{ secrets.AG_DEVICE_ID }}
         run: node scripts/ag-export.mjs
 
+      - name: Запомнить, докуда дошли
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-state
+          path: ag-export-state.json
+          if-no-files-found: ignore
+
       - name: Почистить свои прошлые запуски
         if: always()
         continue-on-error: true
