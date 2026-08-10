@@ -200,27 +200,3 @@ jobs:
         with:
           name: 4PDApps_APK
           path: android/app/build/outputs/apk/release/*.apk
-
-  cleanup:
-    needs: build
-    if: success()
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Delete old runs and APKs (keep last 10 successful)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          WF=build.yml
-          echo "Оставляем 10 последних успешных запусков:"
-          KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
-          echo "$KEEP"
-          echo "Удаляем остальные запуски и их APK:"
-          gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
-            [ "$id" = "$GITHUB_RUN_ID" ] && continue
-            if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
-              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
-            fi
-          done

@@ -1,0 +1,34 @@
+name: Уборка старых сборок
+
+on:
+  workflow_run:                      # запускается сам, когда сборка завершилась
+    workflows: ["Build APK"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Чистить, только если сборок больше 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          WF=build.yml
+          TOTAL=$(gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq 'length')
+          echo "Всего запусков сборки: $TOTAL"
+          if [ "$TOTAL" -le 10 ]; then
+            echo "Меньше одиннадцати — чистить нечего"
+            exit 0
+          fi
+          KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 10 --json databaseId --jq '.[].databaseId')
+          gh run list --repo "$REPO" --workflow "$WF" --limit 300 --json databaseId --jq '.[].databaseId' | while read -r id; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            if ! printf '%s\n' "$KEEP" | grep -qx "$id"; then
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
+            fi
+          done
