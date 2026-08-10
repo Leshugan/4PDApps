@@ -1,0 +1,67 @@
+name: Сбор данных от пользователей
+run-name: 📥 Сбор данных от пользователей
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: userdata
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Забрать записи и дописать в базу
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          test -f ag4pda_users.json || echo '{"v":1,"files":{}}' > ag4pda_users.json
+          gh issue list --repo "$REPO" --label filedata --state open --limit 200 --json number,body > /tmp/issues.json
+          node - << 'ENDNODE'
+          const fs = require("fs");
+          const items = JSON.parse(fs.readFileSync("/tmp/issues.json", "utf8"));
+          const db = JSON.parse(fs.readFileSync("ag4pda_users.json", "utf8"));
+          db.files = db.files || {};
+          const done = [];
+          let added = 0;
+          for (const it of items) {
+            let r = null;
+            try { r = JSON.parse(String(it.body || "").trim()); } catch {}
+            done.push(it.number);
+            if (!r || !r.aid || !r.pkg || !r.sig) continue;                 // мусор — просто выбрасываем
+            if (!/^https?:\/\/4pda\.(to|ru)\/forum\/dl\/post\/\d+\//i.test(String(r.url || ""))) continue;
+            if (!/^[0-9A-Fa-f]{32,64}$/.test(String(r.sig))) continue;
+            const t = String(r.topicId || "0");
+            db.files[t] = db.files[t] || [];
+            if (!db.files[t].some((x) => x.aid === r.aid)) {
+              db.files[t].push({ aid: r.aid, url: r.url, name: r.name, pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, abis: r.abis, size: r.size });
+              added++;
+            }
+          }
+          db.updated = new Date().toISOString();
+          fs.writeFileSync("ag4pda_users.json", JSON.stringify(db));
+          fs.writeFileSync("/tmp/done.txt", done.join("\n"));
+          console.log(`записей обработано: ${items.length}, добавлено новых: ${added}`);
+          ENDNODE
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add ag4pda_users.json
+          git diff --cached --quiet || git commit -m "данные от пользователей"
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
+          while read -r n; do
+            [ -n "$n" ] && gh issue delete "$n" --repo "$REPO" --yes >/dev/null 2>&1 || gh issue close "$n" --repo "$REPO" >/dev/null 2>&1 || true
+          done < /tmp/done.txt
