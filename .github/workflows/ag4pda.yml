@@ -2,15 +2,20 @@ name: ag4pda base
 
 on:
   schedule:
-    - cron: "20 2 * * *"
+    - cron: "*/30 * * * *"      # каждые 30 минут, пока база не соберётся целиком
   workflow_dispatch:
     inputs:
       per_run:
         description: "Сколько тем обойти за запуск"
-        default: "2500"
+        default: "4000"
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: ag4pda
+  cancel-in-progress: false
 
 jobs:
   collect:
@@ -118,7 +123,12 @@ jobs:
             await sleep(PAUSE);
           }
 
-          db.cursor = (start + slice.length) % topics.length;
+          const nextCursor = (start + slice.length) % topics.length;
+          db.cursor = nextCursor;
+          db.total = topics.length;
+          db.done = nextCursor === 0 || (db.roundStart != null && start < db.roundStart);   // круг закончен
+          if (db.done) { db.roundStart = 0; db.finishedAt = new Date().toISOString(); }
+          else db.roundStart = db.roundStart || 0;
           db.updated = new Date().toISOString();
           fs.writeFileSync(OUT, JSON.stringify(db));
           console.log(`готово: тем с данными ${ok}, пустых ${empty}; всего пакетов в базе ${Object.keys(db.apps).length}, тем ${Object.keys(db.files).length}`);
@@ -126,13 +136,55 @@ jobs:
           ENDOFSCRIPT
       - name: Собрать сведения с сервера App&Game
         env:
-          PER_RUN: ${{ github.event.inputs.per_run || '2500' }}
+          PER_RUN: ${{ github.event.inputs.per_run || '4000' }}
           AG_DEVICE_ID: ${{ secrets.AG_DEVICE_ID || 't4pdapps-robot-0001' }}
         run: node scripts/ag4pda-fetch.mjs
       - name: Сохранить в репозиторий
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+          git pull --rebase --autostash || true
           git add ag4pda_fucker.json
           git diff --cached --quiet || git commit -m "ag4pda_fucker: обновление базы"
           git push
+      - name: Продолжить сразу, пока база не собрана целиком
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DONE=$(node -e "try{const d=require('./ag4pda_fucker.json');console.log(d.done?1:0)}catch(e){console.log(0)}")
+          if [ "$DONE" != "1" ]; then
+            gh workflow run "ag4pda base" --ref "${{ github.ref_name }}" || true
+            echo "запускаю следующий круг"
+          else
+            echo "база собрана целиком"
+          fi
+      - name: Почистить историю запусков
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # оставляем один последний успешный и один последний неуспешный запуск
+          for STATUS in success failure; do
+            gh run list --workflow "ag4pda base" --status $STATUS --limit 200 --json databaseId \
+              --jq '.[1:] | .[].databaseId' | while read -r ID; do
+                [ -n "$ID" ] && gh run delete "$ID" || true
+              done
+          done
+          for STATUS in cancelled skipped startup_failure timed_out; do
+            gh run list --workflow "ag4pda base" --status $STATUS --limit 200 --json databaseId \
+              --jq '.[].databaseId' | while read -r ID; do
+                [ -n "$ID" ] && gh run delete "$ID" || true
+              done
+          done
+      - name: Убрать старые запуски
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          keep_ok=$(gh run list --workflow "ag4pda base" --status success --limit 1 --json databaseId -q '.[0].databaseId')
+          keep_bad=$(gh run list --workflow "ag4pda base" --status failure --limit 1 --json databaseId -q '.[0].databaseId')
+          for id in $(gh run list --workflow "ag4pda base" --limit 100 --json databaseId -q '.[].databaseId'); do
+            if [ "$id" != "$keep_ok" ] && [ "$id" != "$keep_bad" ] && [ "$id" != "${{ github.run_id }}" ]; then
+              gh run delete "$id" || true
+            fi
+          done
