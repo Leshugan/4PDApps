@@ -65,3 +65,20 @@ jobs:
           while read -r n; do
             [ -n "$n" ] && gh issue delete "$n" --repo "$REPO" --yes >/dev/null 2>&1 || gh issue close "$n" --repo "$REPO" >/dev/null 2>&1 || true
           done < /tmp/done.txt
+
+      - name: Почистить свои запуски (оставить 2 последних успешных)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          WF="Сбор данных от пользователей"
+          KEEP=$(gh run list --repo "$REPO" --workflow "$WF" --status success --limit 2 --json databaseId --jq '.[].databaseId')
+          KEEP_FAIL=$(gh run list --repo "$REPO" --workflow "$WF" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')
+          gh run list --repo "$REPO" --workflow "$WF" --limit 200 --json databaseId --jq '.[].databaseId' | while read -r id; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            if ! printf '%s\n%s\n' "$KEEP" "$KEEP_FAIL" | grep -qx "$id"; then
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
+            fi
+          done
