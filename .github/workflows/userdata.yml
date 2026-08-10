@@ -44,9 +44,11 @@ jobs:
             let r = null;
             try { r = JSON.parse(String(it.body || "").trim()); } catch {}
             done.push(it.number);
-            if (!r || !r.aid || !r.pkg || !r.sig) continue;                 // мусор — просто выбрасываем
-            if (!/^https?:\/\/4pda\.(to|ru)\/forum\/dl\/post\/\d+\//i.test(String(r.url || ""))) continue;
-            if (!/^[0-9A-Fa-f]{32,64}$/.test(String(r.sig))) continue;
+            if (!r || !r.aid) { console.log("пропуск: нет номера вложения"); continue; }
+            if (!r.pkg) { console.log("пропуск " + r.aid + ": нет имени пакета"); continue; }
+            if (!r.sig) { console.log("пропуск " + r.aid + ": нет подписи"); continue; }
+            if (!/4pda\.(to|ru|ws)/i.test(String(r.url || ""))) { console.log("пропуск " + r.aid + ": чужая ссылка " + r.url); continue; }
+            if (!/^[0-9A-Fa-f]{8,64}$/.test(String(r.sig).replace(/[^0-9A-Fa-f]/g, ""))) { console.log("пропуск " + r.aid + ": странная подпись " + r.sig); continue; }
             const t = String(r.topicId || "0");
             db.files[t] = db.files[t] || [];
             const rec = { aid: r.aid, url: r.url, name: r.name, app: r.app_name || "", pkg: r.pkg, ver: r.ver, code: r.code, sig: String(r.sig).toUpperCase(), minSdk: r.minSdk, targetSdk: r.targetSdk || 0, abis: r.abis, size: r.size, crc: String(r.crc32 || "") };
