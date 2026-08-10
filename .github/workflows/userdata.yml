@@ -30,7 +30,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          set -e
           test -f ag4pda_users.json || echo '{"v":1,"files":{}}' > ag4pda_users.json
           gh issue list --repo "$REPO" --label filedata --state open --limit 200 --json number,body > /tmp/issues.json
           node - << 'ENDNODE'
@@ -65,11 +64,6 @@ jobs:
           fs.writeFileSync("/tmp/done.txt", done.join("\n"));
           console.log(`записей обработано: ${items.length}, добавлено новых: ${added}`);
           ENDNODE
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add ag4pda_users.json
-          git diff --cached --quiet || git commit -m "данные от пользователей"
-          for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
           while read -r n; do
             [ -z "$n" ] && continue
             # сперва пробуем удалить насовсем, если прав не хватит — закрываем
@@ -99,3 +93,8 @@ jobs:
               gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1 && echo "удалён $id" || true
             fi
           done
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add ag4pda_users.json
+          git diff --cached --quiet || git commit -m "данные от пользователей"
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done
