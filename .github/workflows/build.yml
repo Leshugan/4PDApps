@@ -1,11 +1,11 @@
 name: Build APK
-run-name: "🔨 Сборка APK 4PDApps (нативная)"
+run-name: "🔨 Сборка APK 4PDApps"
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'Project_4PDApps.zip'
+    paths:                          # собирать APK только когда меняется сам проект,
+      - 'Project_4PDApps.zip'       # а не catalog.json/versions.json/catalog.yml
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -26,60 +26,177 @@ jobs:
       - name: Распаковать архив проекта в корень
         run: |
           set -e
-          if [ ! -f Project_4PDApps.zip ]; then echo "нет Project_4PDApps.zip"; exit 1; fi
+          # В корне репозитория лежит только этот workflow + Project_4PDApps.zip.
+          if [ ! -f Project_4PDApps.zip ]; then
+            echo "ОШИБКА: нет Project_4PDApps.zip в корне репозитория."; exit 1
+          fi
           unzip -o -q Project_4PDApps.zip -d _extracted
           if [ -d _extracted/Project_4PDApps ]; then SRC=_extracted/Project_4PDApps; else SRC=_extracted; fi
           shopt -s dotglob
           for item in "$SRC"/*; do
             name=$(basename "$item")
             [ "$name" = ".github" ] && continue
-            rm -rf "./$name"; cp -r "$item" "./$name"
+            rm -rf "./$name"
+            cp -r "$item" "./$name"
           done
           shopt -u dotglob
-          rm -rf _extracted; rm -f Project_4PDApps.zip
-          echo "=== корень ===" && ls -la
+          rm -rf _extracted
+          rm -f Project_4PDApps.zip
+          echo "=== корень после распаковки ===" && ls -la
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
 
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Кэш Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
           cache-read-only: false
 
-      - name: Версия из version.json
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web
+        run: npm run build
+
+      - name: Add Android platform
         run: |
-          APP_VER="1.000"; IS_REL="1"
-          if [ -f version.json ]; then
-            APP_VER="$(node -e 'try{process.stdout.write(String(require("./version.json").version||"1.000"))}catch(e){process.stdout.write("1.000")}')"
-            IS_REL="$(node -e 'try{process.stdout.write(require("./version.json").release===false?"0":"1")}catch(e){process.stdout.write("1")}')"
+          rm -rf android            # снести старую платформу — иначе cap add пропустит свежую сборку
+          rm -f capacitor.config.ts # в архиве только JSON-конфиг
+          npx cap add android
+          npx cap copy android      # принудительно скопировать свежий web-бандл (dist) в ассеты
+          {
+            echo "org.gradle.caching=true"
+            echo "org.gradle.parallel=true"
+            echo "org.gradle.configureondemand=true"
+            echo "org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8"
+          } >> android/gradle.properties
+          # Kotlin plugin (код Google Play API из gplayapi — на Kotlin)
+          sed -i "s#classpath 'com.android.tools.build:gradle.*#&\n        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.21'#" android/build.gradle
+          sed -i "s#apply plugin: 'com.android.application'#apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'#" android/app/build.gradle
+          # зависимости: gplayapi (Maven Central) + gson + okhttp + coroutines
+          sed -i 's#dependencies {#dependencies {\n    implementation "com.auroraoss:gplayapi:3.5.8"\n    implementation "com.google.code.gson:gson:2.10.1"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"#' android/app/build.gradle
+          # JVM target Kotlin = 17 (как у Java в Capacitor)
+          printf '\nandroid.kotlinOptions.jvmTarget = "17"\n' >> android/app/build.gradle
+          # Версия приложения берётся ИЗ ПРОЕКТА (version.json в корне zip) — этот workflow больше править не нужно.
+          # Формат version.json: {"version":"1.009","release":true,"changelog":["…"]}
+          # Порядок источников: version.json → package.json → 1.000. release:true = финальная версия как есть;
+          # release:false = тестовая сборка, к имени APK добавляется номер прогона (версия приложения не меняется).
+          APP_VER=""
+          if [ -f version.json ]; then APP_VER="$(node -e 'try{process.stdout.write(String(require("./version.json").version||""))}catch(e){}' 2>/dev/null || true)"; fi
+          if [ -z "$APP_VER" ] && [ -f package.json ]; then APP_VER="$(node -e 'try{process.stdout.write(String(require("./package.json").version||""))}catch(e){}' 2>/dev/null || true)"; fi
+          if [ -z "$APP_VER" ]; then APP_VER="1.000"; echo "ВНИМАНИЕ: версия не найдена в version.json/package.json — беру $APP_VER"; fi
+          IS_REL="$(node -e 'try{process.stdout.write(require("./version.json").release===false?"0":"1")}catch(e){process.stdout.write("1")}' 2>/dev/null || echo 1)"
+          echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
+          echo "IS_REL=$IS_REL" >> "$GITHUB_ENV"
+          echo "----- источник версии: version.json -----" && cat version.json 2>/dev/null || true
+          APP_CODE="$(echo "$APP_VER" | tr -d '.')"
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" android/app/build.gradle
+          sed -i "s/versionCode [0-9][0-9]*/versionCode $APP_CODE/" android/app/build.gradle
+          echo "----- версия -----" && grep -E "versionName|versionCode" android/app/build.gradle
+          echo "----- deps -----" && grep -E "gplayapi|okhttp|coroutines|kotlin-gradle|kotlin-android" android/build.gradle android/app/build.gradle || true
+
+      - name: Generate app icons
+        run: |
+          # Рендерим icon.svg в icon.png через sharp, затем генерим наборы иконок
+          if [ -f resources/icon.svg ]; then
+            npm i -g sharp-cli >/dev/null 2>&1 || npm i sharp >/dev/null 2>&1 || true
+            node -e "const s=require('sharp');s('resources/icon.svg',{density:300}).resize(1024,1024).png().toFile('resources/icon.png').then(()=>console.log('svg->png ok')).catch(e=>{console.log('render skip:',e.message)})" || echo "sharp render skipped"
           fi
-          APP_CODE="$(echo "$APP_VER" | awk -F. '{printf "%d%03d", $1, $2}')"
-          [ -z "$APP_CODE" ] && APP_CODE=1000
-          echo "APP_VER=$APP_VER" >> $GITHUB_ENV
-          echo "IS_REL=$IS_REL" >> $GITHUB_ENV
-          sed -i "s/versionName \"[^\"]*\"/versionName \"$APP_VER\"/" app/build.gradle
-          sed -i "s/versionCode [0-9][0-9]*/versionCode $APP_CODE/" app/build.gradle
-          grep -E "versionName|versionCode" app/build.gradle
+          npx @capacitor/assets generate --android --assetPath resources
 
-      - name: Сборка релиза
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
-
-      - name: Подписать APK
+      - name: Разметка уведомления загрузки (кнопки справа)
         run: |
-          BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
-          APKSIGNER="$ANDROID_HOME/build-tools/$BT/apksigner"
-          UNSIGNED=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          OUT="4PDApps v${APP_VER}.apk"
-          [ "$IS_REL" = "0" ] && OUT="4PDApps v${APP_VER}-test${GITHUB_RUN_NUMBER}.apk"
-          "$APKSIGNER" sign --ks uc.jks --ks-pass pass:updatechecker --key-pass pass:updatechecker --ks-key-alias uc --out "$OUT" "$UNSIGNED"
-          "$APKSIGNER" verify "$OUT" && echo "подпись ок"
-          ls -la *.apk
+          mkdir -p android/app/src/main/res/layout
+          cat > android/app/src/main/res/layout/t4_notif_dl.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent" android:layout_height="wrap_content"
+              android:orientation="vertical"
+              android:paddingStart="2dp" android:paddingEnd="2dp" android:paddingTop="4dp" android:paddingBottom="2dp">
+            <TextView android:id="@+id/t4_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="13sp" android:maxLines="1" android:ellipsize="end" android:textColor="#DDDDDD"/>
+            <ProgressBar android:id="@+id/t4_prog" style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="6dp" android:max="100"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="2dp">
+              <TextView android:id="@+id/t4_sub" android:layout_width="0dp" android:layout_height="wrap_content"
+                  android:layout_weight="1" android:textSize="11sp" android:maxLines="1" android:textColor="#9A9A9A"/>
+              <TextView android:id="@+id/t4_b1" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                  android:minHeight="44dp" android:minWidth="64dp" android:gravity="center"
+                  android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
+                  android:paddingStart="12dp" android:paddingEnd="12dp"/>
+              <TextView android:id="@+id/t4_b2" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                  android:minHeight="44dp" android:minWidth="64dp" android:gravity="center"
+                  android:textSize="14sp" android:textStyle="bold" android:textAllCaps="true" android:textColor="#C8892E"
+                  android:paddingStart="12dp" android:paddingEnd="12dp"/>
+            </LinearLayout>
+          </LinearLayout>
+          XML
+          sed -i 's/^          //' android/app/src/main/res/layout/t4_notif_dl.xml
+          echo "layout создан"
+
+      - name: Add Android permissions
+        run: |
+          MAN=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "QUERY_ALL_PACKAGES" "$MAN"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n\n    <application#' "$MAN"
+          fi
+          # запись в общее хранилище (стар. Android) + доступ ко всем файлам (Android 11+) + фоновая служба загрузок
+          if ! grep -q "WRITE_EXTERNAL_STORAGE" "$MAN"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />\n\n    <application#' "$MAN"
+          fi
+          # legacy-доступ к файлам (для списка «Загрузок» на Android 10)
+          sed -i 's#<application #<application android:requestLegacyExternalStorage="true" #' "$MAN"
+          # старый back-callback, чтобы кнопка/жест «Назад» доходили до приложения
+          sed -i 's#<application #<application android:enableOnBackInvokedCallback="false" #' "$MAN"
+          # экран 4pda внутри приложения (WebView)
+          if ! grep -q "leshugan.a4pda.WebViewActivity" "$MAN"; then
+            sed -i 's#</application>#    <activity android:name="leshugan.a4pda.WebViewActivity" android:configChanges="keyboardHidden|orientation|screenSize" android:exported="false" />\n    </application>#' "$MAN"
+          fi
+          echo "----- manifest -----"
+          grep -E "uses-permission|enableOnBackInvokedCallback|WebViewActivity" "$MAN" || true
+
+      - name: Install native Apps plugin
+        run: |
+          PKG=android/app/src/main/java/leshugan/a4pda
+          mkdir -p "$PKG" android/app/src/main/res/xml
+          cp native/AppsPlugin.java "$PKG/AppsPlugin.java"
+          cp native/MainActivity.java "$PKG/MainActivity.java"
+          cp native/WebViewActivity.java "$PKG/WebViewActivity.java"
+          cp native/*.kt "$PKG/" 2>/dev/null || echo "WARN: no .kt files in native/ (нужен свежий Project_4PDApps.zip)"
+          # пути FileProvider (для установки apk из «Загрузок») — весь внешний storage
+          printf '%s\n' '<paths>' '  <external-path name="ext" path="." />' '  <external-files-path name="extfiles" path="." />' '  <cache-path name="cache" path="." />' '  <files-path name="files" path="." />' '</paths>' > android/app/src/main/res/xml/file_paths.xml
+          echo "native files:" && ls -la "$PKG"
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build signed release APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --build-cache \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/uc.jks" \
+            -Pandroid.injected.signing.store.password="updatechecker" \
+            -Pandroid.injected.signing.key.alias="uc" \
+            -Pandroid.injected.signing.key.password="updatechecker"
+
+      - name: Переименовать APK (4PDApps vX.XXX.apk)
+        run: |
+          SRC=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          if [ "${IS_REL:-1}" = "1" ]; then DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}.apk"; else DST="android/app/build/outputs/apk/release/4PDApps v${APP_VER}-test${GITHUB_RUN_NUMBER}.apk"; fi
+          if [ -n "$SRC" ] && [ "$SRC" != "$DST" ]; then mv "$SRC" "$DST"; fi
+          ls -la android/app/build/outputs/apk/release/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: 4PDApps_APK
-          path: "*.apk"
+          path: android/app/build/outputs/apk/release/*.apk
